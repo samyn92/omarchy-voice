@@ -46,6 +46,7 @@ uv run python tests/phrases_test.py   # offline: real transcripts → the action
 uv run python tests/e2e.py            # windows, clicks, typing, voxtype modes, panel
 uv run python tests/e2e_herdr.py      # agents: navigation, launcher, prompts
 uv run python tests/e2e_browser.py    # search, navigation, keyboard in Chromium
+uv run python tests/appearance_test.py  # the browser keeps its own dark mode while we are attached
 ```
 
 The end-to-end suites speak through the real microphone path: a PipeWire null sink

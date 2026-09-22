@@ -63,6 +63,7 @@ class BrowserBridge:
 
         executor._pw = sync_playwright().start()
         executor._browser = executor._pw.chromium.connect_over_cdp(self.cdp_url, timeout=3000)
+        executor._keep_appearance()
         executor._select_page()
         self._executor = executor
         return executor

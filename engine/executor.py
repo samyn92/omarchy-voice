@@ -122,10 +122,30 @@ class Executor:
     def connect(self):
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+        self._keep_appearance()
         self._select_page()
         if self._page.url == "about:blank":
             self._page.goto("https://example.com", wait_until="domcontentloaded", timeout=30000)
         return self
+
+    def _keep_appearance(self) -> None:
+        """Playwright emulates `prefers-color-scheme: light` on every page it attaches to, so the
+        user's browser would drop out of dark mode for as long as we are connected.  Clearing the
+        override ("no-preference") hands the pages back to the browser's own setting."""
+
+        def restore(page) -> None:
+            try:
+                page.emulate_media(color_scheme="no-preference", reduced_motion="no-preference")
+            except Exception:
+                pass
+
+        for context in self._browser.contexts:
+            for page in context.pages:
+                restore(page)
+            try:
+                context.on("page", restore)   # tabs opened later are emulated too
+            except Exception:
+                pass
 
     def _all_pages(self):
         return [
