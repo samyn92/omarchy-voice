@@ -393,6 +393,8 @@ class VoiceController:
         self.pending = None                # brain.Action or catalog Action awaiting "confirm"
         self.autopilot = None              # the goal being worked on, while one is running
         self.autopilot_stop = threading.Event()
+        self._orb_busy = False             # while true, the level stream leaves the orb alone
+        self._orb_sent = (0.0, 0.0)        # (level, when): silence is not worth a message every 30 ms
         self.autopilot_reply: threading.Event | None = None
         self.autopilot_said_yes = False
         self.running = True
@@ -910,17 +912,29 @@ class VoiceController:
         return "listening"
 
     def orb(self, state: str, level: float = 0.0) -> None:
+        # thinking and acting own the orb until the next rest, so the level stream cannot overwrite them
+        self._orb_busy = state in ("thinking", "acting")
         if self.brain is not None:
             self.brain.orb(state, level)
 
     def on_level(self, level: float) -> None:
-        if self.brain is None:
-            return
+        """Every 30 ms block while listening: the orb must move before the VAD has decided."""
+        if self.brain is None or self._orb_busy:
+            return                       # thinking / acting own the orb until they are done
         rest = self.orb_rest()
         if rest == "off":
             return
-        if self.speaking or rest == "transcribe":
-            self.brain.orb("transcribe" if rest == "transcribe" else "hearing", level)
+        last, when = self._orb_sent
+        now = time.monotonic()
+        if abs(level - last) < 0.02 and now - when < 0.25:
+            return                       # nothing changed worth drawing
+        self._orb_sent = (level, now)
+        if rest == "transcribe":
+            self.brain.orb("transcribe", level)
+        elif self.speaking or level > 0.02:
+            self.brain.orb("hearing", level)
+        else:
+            self.brain.orb("listening", level)
 
     def on_speech_end(self) -> None:
         self.speaking = False

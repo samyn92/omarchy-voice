@@ -38,6 +38,16 @@ PREROLL_S = 0.35            # audio kept before speech onset so the first word i
 MAX_UTTERANCE_S = 20
 
 
+NOISE_FLOOR = 0.004         # below this a room is "quiet"; keeps the meter still when nobody talks
+SPEECH_RMS = 0.12           # normal speaking voice maps to about 1.0
+
+
+def level_of(block: np.ndarray) -> float:
+    """0…1 loudness of one audio block, for the orb."""
+    rms = float(np.sqrt(np.mean(np.square(block)))) if len(block) else 0.0
+    return max(0.0, min(1.0, (rms - NOISE_FLOOR) / SPEECH_RMS))
+
+
 def _resample(x: np.ndarray, src: int, dst: int) -> np.ndarray:
     if src == dst:
         return x.astype(np.float32, copy=False)
@@ -242,8 +252,14 @@ class LiveVAD:
                     continue
                 last_block = time.monotonic()
                 clock += block_s
-                heard.append(data.flatten().astype(np.float32) / 32768.0)
+                block = data.flatten().astype(np.float32) / 32768.0
+                heard.append(block)
                 since_vad += 1
+                if on_level:      # one reading per 30 ms block, VAD or not: this drives the orb
+                    try:
+                        on_level(level_of(block))
+                    except Exception:
+                        pass
                 if speech_start is None and len(heard) > keep_idle:
                     del heard[: len(heard) - keep_idle]   # silence: keep only what a preroll needs
                 if since_vad < self.blocks_per_vad:
@@ -251,11 +267,6 @@ class LiveVAD:
                 since_vad = 0
                 window = np.concatenate(heard[-(int(n_window / self.block) + 1):])
                 window16 = _resample(window[-n_window:], self.rate, WHISPER_RATE)
-                if on_level:   # how loud it is right now, for the orb (0…1, speech sits around 0.15)
-                    try:
-                        on_level(min(1.0, float(np.sqrt(np.mean(np.square(window16[-self.block:])))) / 0.15))
-                    except Exception:
-                        pass
                 last_end = self._speech_at_tail(window16)
                 silence_ago = (len(window16) / WHISPER_RATE - last_end) if last_end is not None else None
                 done = False

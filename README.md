@@ -12,7 +12,8 @@ from what is on your screen. Jev only ever *picks* from the windows, buttons and
 actions that exist — it never writes commands.
 
 A glowing orb sits above the bottom edge whenever voice control is listening, in your
-Omarchy theme's accent colour: it breathes while it waits, follows your voice while you
+Omarchy theme's accent colour. A ring of ticks around it is the last two seconds of your
+voice, one per 30 ms: it breathes while it waits, moves with every syllable while you
 speak, pulses while it decides and blooms when it acts. A microphone in the bar shows the
 same state, and its panel is a live trace: what was heard, how it was understood, what was
 done and how long it took.

@@ -95,8 +95,11 @@ class Orb:
         self.state = "off"
         self.level = 0.0
         self.smooth = 0.0
+        self.peak = 0.0
+        self.history = [0.0] * 72      # the last ~2 s, drawn around the rim
         self.since = time.monotonic()
         self.ticking = False
+        self.interval = 16
         self.win = Gtk.ApplicationWindow(application=app)
         Layer.init_for_window(self.win)
         Layer.set_layer(self.win, Layer.Layer.OVERLAY)
@@ -128,6 +131,10 @@ class Orb:
             self.since = time.monotonic()
         self.state = state if state in self.STATES else "off"
         self.level = max(0.0, min(1.0, float(msg.get("level", 0.0))))
+        if self.level > self.smooth:
+            self.smooth = self.level     # attack now; the tick only handles the fall
+        self.history.append(self.level)
+        del self.history[:-72]
         if self.state == "off":
             self.win.set_visible(False)
             self.ticking = False
@@ -139,15 +146,61 @@ class Orb:
             self.on_realize()
         if not self.ticking:
             self.ticking = True
-            GLib.timeout_add(33, self.tick)
+            self.interval = self.wanted_interval()
+            GLib.timeout_add(self.interval, self.tick)
+
+    def wanted_interval(self) -> int:
+        """60 fps while anything moves, 12 fps for quiet breathing — this runs all day."""
+        moving = (self.state in ("hearing", "thinking", "acting", "error")
+                  or max(self.level, self.smooth, self.peak) > 0.02)
+        return 16 if moving else 80
 
     def tick(self) -> bool:
         if self.state == "off" or not self.win.get_visible():
             self.ticking = False
             return False
-        self.smooth += (self.level - self.smooth) * 0.35      # follow the voice, without jitter
+        # fast attack, slow release: what every volume meter does, and why it reads as "instant"
+        self.smooth += (self.level - self.smooth) * (0.7 if self.level > self.smooth else 0.12)
+        self.peak = max(self.level, self.peak - 0.02)
+        if self.smooth < 0.004:
+            self.smooth = 0.0
         self.area.queue_draw()
+        wanted = self.wanted_interval()
+        if wanted != self.interval:            # change pace by re-arming at the new one
+            self.interval = wanted
+            GLib.timeout_add(wanted, self.tick)
+            return False
         return True
+
+    def ring(self, cr, cx, cy, core, r, g, b) -> None:
+        """A meter around the orb: one tick per 30 ms block, newest at the top, older fading away."""
+        n = len(self.history)
+        base = 38                                       # fixed: the meter stays put while the core breathes
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_width(2.6)
+        bands: dict[int, list[tuple[float, float, float, float]]] = {}
+        for i, level in enumerate(self.history):
+            age = (n - 1 - i) / n                       # 0 = just now, 1 = two seconds ago
+            angle = -math.pi / 2 - age * 2 * math.pi    # the newest sits at the top and drifts clockwise
+            inner, outer = base, base + 2.5 + 26 * level   # quiet moments keep a baseline tick
+            ca, sa = math.cos(angle), math.sin(angle)
+            band = int((1 - age) ** 1.6 * 8)            # 9 alpha steps: 9 strokes instead of 72
+            bands.setdefault(band, []).append((cx + inner * ca, cy + inner * sa,
+                                               cx + outer * ca, cy + outer * sa))
+        for band, segments in bands.items():
+            cr.set_source_rgba(r, g, b, band / 8 * 0.85 + 0.06)
+            cr.new_path()
+            for x0, y0, x1, y1 in segments:
+                cr.move_to(x0, y0)
+                cr.line_to(x1, y1)
+            cr.stroke()
+
+        peak = base + 4 + 26 * self.peak                # the loudest moment of the last second
+        cr.set_source_rgba(min(1, r + 0.25), min(1, g + 0.25), min(1, b + 0.25), 0.22)
+        cr.set_line_width(1.0)
+        cr.new_path()
+        cr.arc(cx, cy, peak, 0, 2 * math.pi)
+        cr.stroke()
 
     def color(self) -> tuple[float, float, float]:
         if self.state == "error":
@@ -163,7 +216,7 @@ class Orb:
             core = 13 + 1.6 * math.sin(t * 2.0)
             alpha, halo = 0.55, 2.9
         elif self.state == "hearing":                      # follows the voice
-            core = 14 + 22 * self.smooth
+            core = 13 + 13 * self.smooth
             alpha, halo = 0.75 + 0.2 * self.smooth, 3.4
         elif self.state == "thinking":                     # quicker pulse while it decides
             core = 15 + 3.5 * math.sin(t * 7.0)
@@ -173,7 +226,7 @@ class Orb:
             core = 16 + 26 * (1 - age)
             alpha, halo = 0.85 * (1 - age) + 0.25, 3.6
         elif self.state == "transcribe":                   # steady and wide: it is recording you
-            core = 17 + 1.2 * math.sin(t * 3.2) + 14 * self.smooth
+            core = 15 + 1.2 * math.sin(t * 3.2) + 11 * self.smooth
             alpha, halo = 0.8, 3.2
         else:                                              # error
             core = 16 + 4 * math.sin(t * 9.0)
@@ -194,6 +247,9 @@ class Orb:
         cr.set_source(core_gradient)
         cr.arc(cx, cy, core, 0, 2 * math.pi)
         cr.fill()
+
+        if self.state in ("hearing", "transcribe", "listening"):
+            self.ring(cr, cx, cy, core, r, g, b)
 
         if self.state == "thinking":                       # a ring that goes round while it decides
             cr.set_source_rgba(r, g, b, 0.9)
