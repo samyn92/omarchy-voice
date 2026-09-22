@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# omarchy:summary=Control Omarchy by voice (the voice engine's command line)
+# omarchy:examples=omarchy-voice toggle | omarchy-voice status | omarchy-voice misses --replay
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+VENV="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-voice/venv"
+
+if [[ ! -x $VENV/bin/python ]]; then
+  echo "omarchy-voice is not set up yet. Run: $PLUGIN_DIR/install.sh" >&2
+  exit 1
+fi
+
+exec "$VENV/bin/python" "$PLUGIN_DIR/engine/omarchy_voice.py" "$@"

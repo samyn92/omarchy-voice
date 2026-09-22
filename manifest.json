@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.samyn92.omarchy-voice",
+  "name": "Omarchy Voice",
+  "version": "0.1.0",
+  "author": "Samy",
+  "license": "MIT",
+  "description": "Control Omarchy by voice: windows, workspaces, apps, browsers, herdr agents and dictation",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Voice",
+    "description": "Listening switch, live trace of what was heard and done, and the voice modes",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
