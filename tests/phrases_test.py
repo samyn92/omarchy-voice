@@ -45,6 +45,15 @@ CASES = [
     ("start transcribe", "Start transcribe.", "Transcribe (long)"),
     ("start transcribing", "Start transcribing.", "Transcribe (long)"),
     ("Hit Enter.", "Hit enter.", "Enter"),
+    # phrasings that used to need Jev (found with `omarchy-voice misses` / the history)
+    ("Select above.", "Select above.", "Focus up"),
+    ("Select below.", "Select below.", "Focus down"),
+    ("Go to example.com.", "Go to example.com.", "Open https://example.com"),
+    ("go to example dot com", "Go to example dot com.", "Open https://example.com"),
+    ("Google search for Hermes agent.", "Google search for Hermes agent.", "Search google “Hermes agent”"),
+    ("Double press escape.", "Double press escape.", "Escape ×2"),
+    ("what is under the mouse", "What is under the mouse?", "Read screen"),
+    ("what is this page about", "What is this page about?", "Read screen"),
     # never acted on locally: chatter, fragments, unfinished sentences
     ("Alright.", "It's alright.", None), ("Hello Hello", "Hello, hello.", None), ("okay", "Okay.", None),
     ("right", "Right.", None), ("go on", "Go on.", None), ("close it", "Close it.", None),

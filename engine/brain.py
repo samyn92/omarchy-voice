@@ -171,6 +171,13 @@ TRANSCRIBE_SEND = ("end transcribe send", "end transcribe and send", "and transc
                    "end transcription and send", "transcribe send", "transcribe and send", "send transcription",
                    "transcribe submit", "transcription send", "transcribe enter", "transcribe off and send", "transcribe and submit")
 TRANSCRIBE_CANCEL = ("cancel transcription", "cancel transcribing", "transcribe cancel", "discard transcription")
+# spoken addresses: "go to example com" (the dot does not survive normalization)
+TLDS = "com|org|net|dev|io|ai|app|de|eu|co|tv|me|info|news|sh|gg|xyz"
+READ_SCREEN = ("what is this", "what's this", "what is this page about", "what's this page about",
+               "what is under the mouse", "what's under the mouse", "what is under my mouse",
+               "read this", "read it", "read the screen", "read this page", "what does it say",
+               "what does this say", "what is on screen", "what's on screen", "what's on the screen",
+               "which song is playing", "what song is playing", "what is playing")
 DICTATION_ON = ("start dictation", "dictation mode", "start dictating", "dictation on", "dictate")
 AGAIN = ("again", "repeat", "repeat that", "do that again", "do it again", "once more", "one more time", "more", "one more")
 HINTS = ("show hints", "show numbers", "numbers", "hints", "show labels", "label everything", "show links", "what can i click")
@@ -187,7 +194,8 @@ SIMPLE_WINDOW = {
 MODE_KINDS = ("voxtype", "mode")   # decisions that switch how speech is treated: never delegated
 SEARCH_SITES = {"youtube": "youtube", "wikipedia": "wikipedia", "github": "github", "amazon": "amazon", "reddit": "reddit",
                 "google": "google", "duckduckgo": "duckduckgo", "hacker news": "hacker_news", "twitter": "twitter_x"}
-FOCUS_DIRECTION = re.compile(r"(?:focus|window|select|switch|go to)(?: the)? (left|right|up|down)(?: window)?")
+FOCUS_DIRECTION = re.compile(r"(?:focus|window|select|switch|go to)(?: the)? (left|right|up|down|above|below|beneath|underneath)(?: window)?")
+FOCUS_SYNONYM = {"above": "up", "below": "down", "beneath": "down", "underneath": "down"}
 
 NUMBER_WORDS = {
     "zero": 0, "one": 1, "won": 1, "two": 2, "to": 2, "too": 2, "three": 3, "four": 4, "for": 4, "five": 5,
@@ -623,11 +631,15 @@ class Brain:
                 return Decision(Action("herdr", s.capitalize(), {"op": op[0], "arg": op[1], "session": herdr[1], "address": herdr[0].address},
                                        repeatable=op[0] in ("step_agent", "step_tab", "step_workspace", "pane")))
 
+        if s in READ_SCREEN:
+            return Decision(Action("read", "Read screen", {"element": None}, repeatable=False))
+
         m = re.fullmatch(r"(left |right |middle |double |triple )?click(?: here| there| that| it)?", s)
         if m:
             kind = (m.group(1) or "left ").strip()
             return Decision(Action("click", f"{kind.title()} click here", {"here": True, "kind": kind}))
 
+        s = re.sub(r"^double (press|tap|hit) (.+)", r"press \2 twice", s)   # "double press escape"
         bare = re.sub(r" (?:\w+ times|twice)$", "", s)
         key = FAST_KEYS.get(bare) or FAST_KEYS.get(re.sub(r"^(?:press|hit|tap) (?:the )?|(?: key)$", "", bare))
         if key:
@@ -645,7 +657,8 @@ class Brain:
 
         m = FOCUS_DIRECTION.fullmatch(s)
         if m:
-            return Decision(Action("focus_dir", f"Focus {m.group(1)}", {"direction": m.group(1)}))
+            direction = FOCUS_SYNONYM.get(m.group(1), m.group(1))
+            return Decision(Action("focus_dir", f"Focus {direction}", {"direction": direction}))
 
         m = re.fullmatch(r"(?:make (?:it|this|this window|the window) )?(wider|narrower|taller|shorter|bigger|smaller|expand|enlarge|widen|grow|shrink|narrow)"
                          r"(?: (?:it|this|the window|this window|window))?(?: (a bit|a little|a lot))?", s)
@@ -666,17 +679,33 @@ class Brain:
 
         # "search for hermes agent", "search youtube for stone techno", "google cheap flights"
         sites = "|".join(SEARCH_SITES)
-        m = re.fullmatch(rf"(search|google|look up)(?: (?:on|in))?(?: the)?(?: ({sites}|web|internet))?(?: for)? (.+)", s)
+        m = re.fullmatch(rf"(search|google|look up)(?: search)?(?: (?:on|in))?(?: the)?(?: ({sites}|web|internet))?(?: for)? (.+)", s)
         if m and m.group(3).strip() not in ("for", "web", "the web", "web for", "the web for", "internet", "online"):   # "search web for" …
             site = SEARCH_SITES.get(m.group(2) or ("google" if m.group(1) == "google" else ""), "")   # "web" -> the browser's engine
             # the query as it was written (keeps "C++", capitals), without the command words
-            said = re.match(rf"(?i)\s*(?:search|google|look up)(?:\s+(?:on|in))?(?:\s+the)?(?:\s+(?:{sites}|web|internet))?(?:\s+for)?[\s,:]+(.+)", raw)
+            said = re.match(rf"(?i)\s*(?:search|google|look up)(?:\s+search)?(?:\s+(?:on|in))?(?:\s+the)?(?:\s+(?:{sites}|web|internet))?(?:\s+for)?[\s,:]+(.+)", raw)
             query = (said.group(1) if said else m.group(3)).strip(" .!?")
             if site and site in jev.SITE_SEARCH:
                 url = jev.SITE_SEARCH[site].replace("%s", urllib.parse.quote_plus(query))
                 return Decision(Action("browser", f"Search {site.replace('_', ' ')} “{query[:40]}”",
                                        {"action": {"type": "navigate_url", "url": url, "query": query}}, repeatable=False))
             return Decision(Action("omnibox", f"Search “{query[:40]}”", {"text": query, "search": True}, repeatable=False))
+
+        # "go to example.com", "open example dot com" — a plain address, no site list needed
+        m = re.fullmatch(r"(?:go to|open|navigate to|take me to|visit)(?: the)? "
+                         r"((?:[a-z0-9][a-z0-9-]*)(?:(?:\.| dot )[a-z0-9-]+)+)(?:\.)?", s)
+        if m:
+            host = re.sub(r"\s+dot\s+", ".", m.group(1)).strip(". ")
+            if re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}", host):
+                url = f"https://{host}"
+                return Decision(Action("browser", f"Open {url}", {"action": {"type": "navigate_url", "url": url}},
+                                       repeatable=False))
+        # the dot is lost in normalization, so "example.com" arrives as "example com"
+        m = re.fullmatch(rf"(?:go to|open|navigate to|take me to|visit)(?: the)? ([a-z0-9][a-z0-9-]*) ({TLDS})", s)
+        if m:
+            url = f"https://{m.group(1)}.{m.group(2)}"
+            return Decision(Action("browser", f"Open {url}", {"action": {"type": "navigate_url", "url": url}},
+                                   repeatable=False))
 
         # "open chatgpt", "launch spotify", "open two browsers", "open a new terminal"
         m = re.fullmatch(r"(?:open|launch|start|run|bring up|switch to|show me|show)(?: (a|an|one|two|to|too|three|four|five|\d))?"

@@ -122,9 +122,9 @@ _ACTIONS = [
 
     action("open_terminal", "Open terminal", "shell", "Launch the default terminal", ["omarchy", "launch", "terminal"], "open terminal", "launch terminal", "new terminal", detached=True),
     action("open_browser", "Open browser", "shell", "Launch the default browser", ["omarchy", "launch", "browser"], "open browser", "launch browser", "new browser", detached=True),
-    action("open_files", "Open files", "shell", "Launch the file manager", ["omarchy", "launch", "nautilus"], "open files", "open file manager", "launch file manager", detached=True),
+    action("open_files", "Open files", "shell", "Launch the file manager", ["omarchy", "launch", "nautilus"], "open files", "open file manager", "launch file manager", "open the file manager", "open file explorer", "open the file explorer", "file explorer", detached=True),
     action("open_editor", "Open editor", "shell", "Launch the configured editor", ["omarchy", "launch", "editor", str(Path.home())], "open editor", "launch editor", detached=True),
-    action("apps_menu", "Apps menu", "shell", "Open the Omarchy application menu", ["omarchy", "menu", "summon", "apps"], "open apps", "show apps", "apps menu"),
+    action("apps_menu", "Apps menu", "shell", "Open the Omarchy application menu", ["omarchy", "menu", "summon", "apps"], "open apps", "show apps", "apps menu", "open application drawer", "application drawer", "app drawer", "open app drawer"),
     action("system_menu", "System menu", "shell", "Open the Omarchy system menu", ["omarchy", "menu", "summon", "system"], "open system menu", "show system menu", "system menu"),
     action("clipboard", "Clipboard history", "shell", "Open clipboard history", ["omarchy", "menu", "clipboard"], "open clipboard", "clipboard history", "show clipboard"),
     action("emoji", "Emoji picker", "shell", "Open the emoji picker", ["omarchy", "menu", "emoji"], "open emoji picker", "emoji picker", "show emojis"),
