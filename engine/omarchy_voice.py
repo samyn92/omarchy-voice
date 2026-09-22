@@ -215,6 +215,9 @@ DEFAULT_SETTINGS = {
     "keep_history": True,          # ~/.local/state/omarchy-voice/history.jsonl — what was heard and done, local only
     "default_agent": "",           # herdr agent kind for "new agent" ("" = the kind you run most)
     "fast_stt_model": "base.en",   # in-process Whisper for instant simple commands; "" to disable
+    "autopilot_stage": 2,          # 1 look only · 2 may fill in, asks before committing · 3 also acts alone on trusted sites
+    "autopilot_trusted_sites": [],  # stage 3 only, e.g. ["github.com"] — money/deletions/logins always ask
+    "autopilot_max_steps": 14,     # a goal gives up after this many steps
 }
 
 
@@ -387,6 +390,10 @@ class VoiceController:
         self.lock = threading.RLock()
         self.handling = threading.Lock()   # one command at a time, from mic or socket
         self.pending = None                # brain.Action or catalog Action awaiting "confirm"
+        self.autopilot = None              # the goal being worked on, while one is running
+        self.autopilot_stop = threading.Event()
+        self.autopilot_reply: threading.Event | None = None
+        self.autopilot_said_yes = False
         self.running = True
         self.speaker = None
         self.brain = None
@@ -557,6 +564,10 @@ class VoiceController:
         if spoken in JEV_ONLY_WORDS:
             return self.set_jev_only(not self.settings.get("jev_only"))
 
+        handled = self.autopilot_heard(spoken)
+        if handled is not None:
+            return handled
+
         with self.lock:
             pending = self.pending
         if pending:
@@ -623,6 +634,8 @@ class VoiceController:
                 self.say(decision.say)
             return self.state.update(status=idle, message=decision.say or decision.hud or "Command not understood",
                                      source=decision.source, latency_ms=decision.ms.get("total", 0))
+        if action.kind == "autopilot":
+            return self.start_autopilot(action, decision)
         if action.kind == "confirm":
             with self.lock:
                 pending = self.pending
@@ -641,6 +654,94 @@ class VoiceController:
         exec_ms = round((time.perf_counter() - t_exec) * 1000)
         state = self.state.update(latency_ms=decision.ms.get("total", 0), mode=self.brain.mode)
         return {**state, "_exec_ms": exec_ms}
+
+    # -- working towards a goal in the browser --------------------------------
+    def start_autopilot(self, action, decision) -> dict[str, object]:
+        import autopilot as autopilot_mod
+
+        if self.autopilot:
+            self.brain.hud("Already working on a goal — say stop", tone="warn", ms=2500)
+            return self.state.update(message="A goal is already running")
+        if not self.brain.browser.available():
+            message = "Open a browser with remote debugging first (see the README)"
+            self.brain.hud(message, tone="warn", ms=4000)
+            self.say("I need a browser I can read.")
+            return self.state.update(status="listening" if LISTENING_PATH.exists() else "idle", message=message, last_ok=False)
+
+        goal = str(action.args.get("goal", "")).strip()
+        stage = int(self.settings.get("autopilot_stage", 2))
+        trusted = tuple(self.settings.get("autopilot_trusted_sites") or ())
+        self.autopilot_stop.clear()
+
+        def ask(label: str, reason: str) -> bool:
+            """Put a committing step to the user and wait for an answer (no answer = no)."""
+            reply = threading.Event()
+            self.autopilot_reply, self.autopilot_said_yes = reply, False
+            self.state.update(status="confirming", pending_label=label,
+                              message=f"Confirm: {label}" + (f" — {reason}" if reason else ""))
+            self.brain.hud(f"Confirm: {label}?", reason or "say confirm or stop", tone="warn", ms=60000)
+            self.say(f"{reason}. Confirm {label}, or say stop." if reason else f"Confirm {label}, or say stop.")
+            answered = reply.wait(90)
+            self.autopilot_reply = None
+            self.state.update(status="acting", pending_label="")
+            return bool(answered and self.autopilot_said_yes)
+
+        def on_step(step, run) -> None:
+            self.state.update(status="acting", message=f"{run.goal[:40]} · {step.n}. {step.label}",
+                              autopilot_step=step.n, autopilot_goal=run.goal[:80], autopilot_label=step.label)
+            self.brain.hud(f"Goal: {run.goal[:50]}", f"{step.n}. {step.label}", ms=6000)
+            self.tracer.record({"heard": f"(step {step.n})", "route": "autopilot", "detail": step.kind,
+                                "action": step.label, "ok": step.ok,
+                                "message": step.outcome or (autopilot_mod.REASONS.get(step.reason, "") if step.asked else ""),
+                                "ms": {"e2e": step.ms} if step.ms else {}, "cost": round(step.cost, 6)})
+
+        pilot = autopilot_mod.Autopilot(
+            self.brain.browser, stage=stage, trusted_hosts=trusted, ask=ask, on_step=on_step,
+            stop=self.autopilot_stop.is_set, max_steps=int(self.settings.get("autopilot_max_steps", 14)))
+
+        def work() -> None:
+            try:
+                run = pilot.run(goal)
+            except Exception as exc:
+                print(f"[omarchy-voice] autopilot: {exc}", file=sys.stderr, flush=True)
+                run = autopilot_mod.Run(goal=goal, status="error", answer=str(exc)[:120])
+            self.autopilot = None
+            spoken = run.answer if run.status == "done" and run.answer else run.summary
+            self.brain.hud(f"{run.summary}: {run.goal[:40]}", run.answer[:90], tone="ok" if run.status == "done" else "warn", ms=8000)
+            self.say(spoken[:300])
+            self.tracer.record({"heard": goal, "route": "autopilot", "detail": run.status,
+                                "action": run.summary, "ok": run.status == "done",
+                                "message": run.answer[:160], "ms": {}, "cost": round(run.cost, 6)})
+            self.state.update(status="listening" if LISTENING_PATH.exists() else "idle",
+                              message=f"{run.summary} — {run.answer[:80]}" if run.answer else run.summary,
+                              autopilot_step=0, autopilot_goal="", autopilot_label="",
+                              last_action_label=f"Goal: {goal[:40]}", last_ok=run.status == "done")
+
+        self.autopilot = goal
+        threading.Thread(target=work, name="autopilot", daemon=True).start()
+        self.brain.hud(f"Goal: {goal[:50]}", "working — say stop to end it", ms=6000)
+        return self.state.update(status="acting", message=f"Working on: {goal[:60]}",
+                                 autopilot_goal=goal[:80], last_action_label=f"Goal: {goal[:40]}")
+
+    def autopilot_heard(self, spoken: str) -> dict[str, object] | None:
+        """While a goal runs, only stopping and answering a confirmation mean anything."""
+        if not self.autopilot:
+            return None
+        waiting = self.autopilot_reply
+        if spoken in STOP_WORDS or spoken in CANCEL_WORDS or spoken in ("stop", "stop it", "stop autopilot",
+                                                                       "stop the goal", "abort", "no", "nope"):
+            self.autopilot_stop.set()
+            if waiting:
+                self.autopilot_said_yes = False
+                waiting.set()
+            self.brain.hud("Stopping the goal", tone="warn", ms=2000)
+            return self.state.update(message="Stopping the goal")
+        if waiting and (spoken in CONFIRM_WORDS or spoken in ("yes", "yeah", "yep", "sure", "confirmed", "do it")):
+            self.autopilot_said_yes = True
+            waiting.set()
+            return self.state.update(message="Confirmed")
+        self.brain.hud("Working on the goal — say stop to end it", tone="busy", ms=2000)
+        return self.state.update(message="Working on a goal")
 
     def handle_request(self, request: dict[str, object]) -> dict[str, object]:
         operation = str(request.get("op", "status"))
@@ -1167,6 +1268,8 @@ def main() -> int:
     preview_parser.add_argument("text")
     speak_parser = sub.add_parser("speak")
     speak_parser.add_argument("text")
+    goal_parser = sub.add_parser("goal", help="work towards a goal in the browser, step by step")
+    goal_parser.add_argument("text")
     sub.add_parser("hints")
     grid_parser = sub.add_parser("grid")
     grid_parser.add_argument("--screen", action="store_true")
@@ -1209,6 +1312,8 @@ def main() -> int:
         operation = {"op": "action", "id": args.id}
     elif args.command in ("preview", "speak"):
         operation = {"op": args.command, "text": args.text}
+    elif args.command == "goal":
+        operation = {"op": "speak", "text": f"autopilot {args.text}"}
     elif args.command in ("hints", "clear", "dictation"):
         operation = {"op": args.command}
     elif args.command == "grid":

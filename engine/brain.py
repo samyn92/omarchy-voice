@@ -171,6 +171,10 @@ TRANSCRIBE_SEND = ("end transcribe send", "end transcribe and send", "and transc
                    "end transcription and send", "transcribe send", "transcribe and send", "send transcription",
                    "transcribe submit", "transcription send", "transcribe enter", "transcribe off and send", "transcribe and submit")
 TRANSCRIBE_CANCEL = ("cancel transcription", "cancel transcribing", "transcribe cancel", "discard transcription")
+# a goal for the browser to work towards by itself, rather than one command
+GOAL_PREFIXES = ("autopilot", "auto pilot", "browse for", "work out", "figure out", "find out",
+                 "research", "look into", "take over and", "do this for me")
+
 # spoken addresses: "go to example com" (the dot does not survive normalization)
 TLDS = "com|org|net|dev|io|ai|app|de|eu|co|tv|me|info|news|sh|gg|xyz"
 READ_SCREEN = ("what is this", "what's this", "what is this page about", "what's this page about",
@@ -690,6 +694,13 @@ class Brain:
                 return Decision(Action("browser", f"Search {site.replace('_', ' ')} “{query[:40]}”",
                                        {"action": {"type": "navigate_url", "url": url, "query": query}}, repeatable=False))
             return Decision(Action("omnibox", f"Search “{query[:40]}”", {"text": query, "search": True}, repeatable=False))
+
+        # "figure out when the market opens" — a goal, worked towards step by step in the browser
+        m = re.fullmatch(rf"(?:{'|'.join(GOAL_PREFIXES)})(?: me)?(?:,)? (.+)", s)
+        if m and len(m.group(1).split()) >= 2:
+            goal = re.sub(r"(?i)^(?:" + "|".join(GOAL_PREFIXES) + r")(?: me)?[\s,:]+", "", raw.strip(), count=1)
+            return Decision(Action("autopilot", f"Goal: {goal.strip(' .!?')[:50]}",
+                                   {"goal": goal.strip(" .!?")}, repeatable=False))
 
         # "go to example.com", "open example dot com" — a plain address, no site list needed
         m = re.fullmatch(r"(?:go to|open|navigate to|take me to|visit)(?: the)? "

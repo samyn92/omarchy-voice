@@ -351,6 +351,11 @@ class Executor:
                 self._page.bring_to_front()
                 return {"ok": True, "outcome": f"switched to {self._page.url}"}
 
+            if t == "page_text":
+                # what a reader sees, for answering a goal from the page itself
+                text = page.evaluate("document.body ? document.body.innerText : ''") or ""
+                return {"ok": True, "outcome": "read the page", "text": text[:8000]}
+
             if t == "clear_field":
                 el = self._element_by_id(action.get("targetId") or "")
                 if el:

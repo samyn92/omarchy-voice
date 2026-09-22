@@ -116,6 +116,22 @@ With a [herdr](https://herdr.dev) window open:
 Agents waiting for an approval are never sent a prompt, and talking *about* an agent
 ("the alpha agent is slow today") does nothing — prompts start with "tell" or "ask".
 
+## Goals in the browser
+
+| Say | |
+|---|---|
+| "figure out when the market opens", "find out who wrote Dune" | works towards the goal, then reads the answer out |
+| "research the best train to Berlin", "look into …" | the same |
+| "autopilot book a table for two on Friday" | the same, for goals that fill something in |
+| "stop" | ends the run at once |
+| "confirm" | allows the one step it stopped at |
+
+It searches, follows links, scrolls and reads on its own. Filling in fields and pressing
+buttons is allowed, but it stops and asks before anything that sends, posts, buys, books or
+changes an account. It never types into a password or card field. See
+[configuration](configuration.md) for the three stages and
+[privacy](privacy.md) for what a goal sends.
+
 ## System
 
 | Say | |

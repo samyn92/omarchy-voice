@@ -19,6 +19,9 @@ line change the common ones for you.
 | `speak` | `true` | spoken questions and errors (actions themselves stay silent) |
 | `keep_history` | `true` | keep `~/.local/state/omarchy-voice/history.jsonl` |
 | `fast_stt_model` | `"base.en"` | the in-process Whisper model that makes simple commands instant; `""` turns it off |
+| `autopilot_stage` | `2` | goals in the browser: `1` look only, `2` may fill in but asks before committing, `3` also acts alone on trusted sites |
+| `autopilot_trusted_sites` | `[]` | stage 3 only, e.g. `["github.com"]`. Money, deletions, account changes and signing in always ask, everywhere |
+| `autopilot_max_steps` | `14` | a goal gives up after this many steps (or four minutes) |
 
 ## API key
 
@@ -48,6 +51,7 @@ omarchy-voice dictation                   toggle continuous dictation
 omarchy-voice yolo | yolo-on | yolo-off
 omarchy-voice jev-only                     toggle Jev-only mode
 omarchy-voice transcribe-silence [seconds] quick transcription timeout (no value: cycle 0.5/1/2/3/5)
+omarchy-voice goal "<text>"                work towards a goal in the browser
 omarchy-voice misses [--hours N] [--replay] [--all]
 omarchy-voice key                          store the OpenRouter key
 omarchy-voice catalog [--json]             the built-in system actions

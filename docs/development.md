@@ -17,6 +17,7 @@ engine/
   browsers.py, browser.py, executor.py   browser detection, CDP bridge, Playwright actions
   herdr_ctl.py                   herdr sessions, agents, launcher
   apps.py                        installed applications
+  autopilot.py                   goals in the browser: the step loop, the stages, the risk judge
   jev.py, spans.py               Jev request/answer helpers, text span candidates
   overlay.py                     hints, grid, click flashes, HUD (GTK layer shell)
   voiceio.py                     Piper voice for spoken replies
@@ -47,6 +48,7 @@ uv run python tests/e2e.py            # windows, clicks, typing, voxtype modes, 
 uv run python tests/e2e_herdr.py      # agents: navigation, launcher, prompts
 uv run python tests/e2e_browser.py    # search, navigation, keyboard in Chromium
 uv run python tests/appearance_test.py  # the browser keeps its own dark mode while we are attached
+uv run python tests/autopilot_test.py   # goals: the loop, the stages, the risk judge (offline, scripted Jev)
 ```
 
 The end-to-end suites speak through the real microphone path: a PipeWire null sink

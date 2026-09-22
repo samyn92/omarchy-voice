@@ -34,6 +34,9 @@ BarWidget {
   readonly property string installScript: String(Qt.resolvedUrl("install.sh")).replace("file://", "")
   property string transcribeKind: "long"
   property real transcribeSilence: 3
+  property string autopilotGoal: ""
+  property int autopilotStep: 0
+  property string autopilotLabel: ""
   property int closeSeq: -1
   property int latencyMs: 0
   property var traceEntries: []
@@ -135,6 +138,9 @@ BarWidget {
     jevOnly = parsed.jev_only === true
     transcribeKind = String(parsed.transcribe_kind || "long")
     transcribeSilence = Number(parsed.transcribe_silence_s || 3)
+    autopilotGoal = String(parsed.autopilot_goal || "")
+    autopilotStep = Number(parsed.autopilot_step || 0)
+    autopilotLabel = String(parsed.autopilot_label || "")
     // the daemon is about to type: an open popup would swallow the keystrokes
     var seq = Number(parsed.close_panel || 0)
     if (closeSeq >= 0 && seq !== closeSeq) popupOpen = false
@@ -381,6 +387,30 @@ BarWidget {
             anchors.leftMargin: Style.space(10)
             anchors.rightMargin: Style.space(10)
             spacing: Style.space(6)
+
+            // working towards a goal
+            Text {
+              visible: root.autopilotGoal !== ""
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: "󰓅  " + root.autopilotGoal
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+              elide: Text.ElideRight
+            }
+            Text {
+              visible: root.autopilotGoal !== ""
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: (root.autopilotStep > 0 ? root.autopilotStep + ". " + root.autopilotLabel + " · " : "")
+                    + "say “stop” to end it"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+            }
 
             // voxtype banner
             Text {

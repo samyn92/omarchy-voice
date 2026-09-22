@@ -25,6 +25,12 @@ API. One request contains:
 - your last three voice actions
 - herdr agent names, tasks and states, when a herdr window is open
 
+While a **goal** runs (see [commands](commands.md)), each step sends the goal, the page's
+address and title, its clickable elements and up to 40 lines of the page's visible text —
+once per step, plus a second, smaller request for the risk judge before anything that
+commits. Password and card fields are excluded from the page before it is read, so they are
+never part of a request.
+
 Nothing is sent for commands that are understood locally, while you dictate, or when
 nothing was addressed to the computer. At about 10,000 tokens a request costs roughly
 $0.0004; the panel shows the running total for the day.

@@ -54,6 +54,8 @@ CASES = [
     ("Double press escape.", "Double press escape.", "Escape ×2"),
     ("what is under the mouse", "What is under the mouse?", "Read screen"),
     ("what is this page about", "What is this page about?", "Read screen"),
+    ("figure out when the market opens", "Figure out when the market opens.", "Goal: when the market opens"),
+    ("autopilot book a table for two", "Autopilot book a table for two.", "Goal: book a table for two"),
     # never acted on locally: chatter, fragments, unfinished sentences
     ("Alright.", "It's alright.", None), ("Hello Hello", "Hello, hello.", None), ("okay", "Okay.", None),
     ("right", "Right.", None), ("go on", "Go on.", None), ("close it", "Close it.", None),

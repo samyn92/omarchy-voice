@@ -51,6 +51,7 @@ Just say what you want. A few examples:
 | "start transcribe" … "end transcribe" | long dictation; pauses are fine |
 | "new claude", "next agent", "who needs me" | starts and moves between herdr agents |
 | "tell the agentops agent to run the tests" | sends a prompt to an agent without switching to it |
+| "figure out when the Christmas market opens" | works towards a goal in the browser, step by step |
 
 The full list is in [docs/commands.md](docs/commands.md).
 
@@ -74,6 +75,29 @@ omarchy-voice misses --replay     # what you said that was not done, re-decided 
 omarchy-voice key                 # store your OpenRouter key
 omarchy-voice --help
 ```
+
+## Goals in the browser
+
+Instead of one command you can give a goal, and it works towards it: look at the page, take
+the next step, look again. Say "figure out …", "find out …", "research …" or "autopilot …".
+
+```
+"figure out when the Bremen Christmas market opens"
+  1. Search the web for "when the Bremen Christmas market opens"
+  2. Done — "The Christmas market in Bremen will be open from 23 November to 23 December"
+```
+
+Every step is chosen from what is actually on the page, the panel shows each one as it
+happens, and saying "stop" ends it at once. Answers are quoted from the page, never
+invented: if it cannot find one it says so rather than guess.
+
+Before anything that commits — sending, posting, buying, booking, changing an account — two
+independent checks run: a word list in code, and a second Jev call that sees the page and
+judges what the step would do. Either one is enough to stop and ask you, and anything that
+fails counts as "ask". Fields that hold a password or a card number are never typed into,
+and never reach Jev at all. By default it may fill things in but stops at the commit and
+asks you; `autopilot_stage` in the config changes that — see
+[docs/configuration.md](docs/configuration.md).
 
 ## Requirements
 

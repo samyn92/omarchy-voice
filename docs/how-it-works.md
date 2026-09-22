@@ -57,6 +57,19 @@ second result" or "the one under the mouse" can be resolved.
 
 Before anything is typed the bar panel closes, because an open panel holds the keyboard.
 
+## Working towards a goal
+
+A goal runs a loop: read the page, ask Jev for the single next step out of the elements that
+exist, judge it, do it, read again. It stops at an answer, at a dead end, when the page stops
+changing, after 14 steps or four minutes, or the moment you say stop. Answers are lines of
+the page, quoted — the loop cannot write one.
+
+Anything that commits is judged by a second, separate Jev call that sees only the page and
+the step about to happen, and answers safe / ask / refuse with a reason. A word list in code
+checks the same step independently. Either one is enough to stop and ask, an error or a
+timeout counts as "ask", and stage 3 (trusted sites) still always asks for money, deletions,
+account changes and signing in.
+
 ## Safety
 
 - Actions come from fixed lists; Jev only chooses among them.
