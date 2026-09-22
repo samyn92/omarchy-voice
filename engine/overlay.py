@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Click-through on-screen overlay: hint badges, the zoom grid, click flashes, HUD.
+"""Click-through on-screen overlay: hint badges, the zoom grid, click flashes, HUD, the orb.
 
 Runs under the system Python (PyGObject + gtk4-layer-shell).  The layer shell
 library must be loaded before GTK, so start it with
@@ -12,12 +12,16 @@ JSON lines on stdin (coordinates are logical screen pixels):
   {"op": "hud", "text": "…", "sub": "…", "ms": 2500, "tone": "ok|warn|busy"}
   {"op": "clear"}           hints + grid
   {"op": "monitor", "x": 0, "y": 0}
+  {"op": "orb", "state": "listening|hearing|thinking|acting|transcribe|error|off", "level": 0.0}
 """
 
 import json
 import math
+import os
 import sys
 import time
+import tomllib
+from pathlib import Path
 
 import gi
 
@@ -27,14 +31,181 @@ import cairo  # noqa: E402
 from gi.repository import GLib, Gtk  # noqa: E402
 from gi.repository import Gtk4LayerShell as Layer  # noqa: E402
 
+THEME_NAME = Path.home() / ".local/state/omarchy/current/theme.name"
+THEME_DIRS = (Path.home() / ".config/omarchy/themes", Path("/usr/share/omarchy/themes"))
 ACCENT = (0.43, 0.91, 0.72)
 BADGE_BG = (0.07, 0.09, 0.15)
 WARN = (0.98, 0.75, 0.30)
 FONT = "sans-serif"
 
 
+def hex_rgb(value: str, fallback: tuple[float, float, float]) -> tuple[float, float, float]:
+    text = str(value).strip().lstrip("#")
+    if len(text) != 6:
+        return fallback
+    try:
+        return tuple(int(text[i:i + 2], 16) / 255 for i in (0, 2, 4))   # type: ignore[return-value]
+    except ValueError:
+        return fallback
+
+
+class Theme:
+    """The colours of the current Omarchy theme, re-read when the theme changes."""
+
+    def __init__(self) -> None:
+        self.accent = ACCENT
+        self.background = (0.07, 0.09, 0.15)
+        self.warn = WARN
+        self.stamp = 0.0
+        self.reload()
+
+    def reload(self) -> None:
+        try:
+            stamp = THEME_NAME.stat().st_mtime
+        except OSError:
+            return
+        if stamp == self.stamp:
+            return
+        self.stamp = stamp
+        try:
+            slug = THEME_NAME.read_text().strip()
+            colors = next((d / slug / "colors.toml" for d in THEME_DIRS if (d / slug / "colors.toml").is_file()), None)
+            if not colors:
+                return
+            data = tomllib.loads(colors.read_text())
+        except Exception:
+            return
+        self.accent = hex_rgb(data.get("accent", ""), ACCENT)
+        self.background = hex_rgb(data.get("dark_background") or data.get("background", ""), self.background)
+        self.warn = hex_rgb(data.get("yellow", ""), WARN)
+
+
+class Orb:
+    """A soft glowing circle in the theme's accent colour: voice control is listening.
+
+    Its own small layer surface, so the breathing animation repaints a 260 px square
+    instead of the whole screen.
+    """
+
+    SIZE = 260
+    STATES = ("listening", "hearing", "thinking", "acting", "transcribe", "error")
+
+    def __init__(self, app: Gtk.Application, theme: Theme) -> None:
+        self.theme = theme
+        self.state = "off"
+        self.level = 0.0
+        self.smooth = 0.0
+        self.since = time.monotonic()
+        self.ticking = False
+        self.win = Gtk.ApplicationWindow(application=app)
+        Layer.init_for_window(self.win)
+        Layer.set_layer(self.win, Layer.Layer.OVERLAY)
+        Layer.set_namespace(self.win, "omarchy-voice-orb")
+        Layer.set_keyboard_mode(self.win, Layer.KeyboardMode.NONE)
+        Layer.set_exclusive_zone(self.win, -1)
+        Layer.set_anchor(self.win, Layer.Edge.BOTTOM, True)
+        Layer.set_margin(self.win, Layer.Edge.BOTTOM, 86)   # clear of the HUD, which sits at the bottom too
+        self.win.set_default_size(self.SIZE, self.SIZE)
+        css = Gtk.CssProvider()
+        css.load_from_string("window { background: transparent; }")
+        Gtk.StyleContext.add_provider_for_display(self.win.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.area = Gtk.DrawingArea()
+        self.area.set_content_width(self.SIZE)
+        self.area.set_content_height(self.SIZE)
+        self.area.set_draw_func(self.draw)
+        self.win.set_child(self.area)
+        self.win.connect("realize", self.on_realize)
+        self.win.connect("map", self.on_realize)
+
+    def on_realize(self, *_):
+        surface = self.win.get_surface()
+        if surface:
+            surface.set_input_region(cairo.Region())   # never steal a click
+
+    def apply(self, msg: dict) -> None:
+        state = str(msg.get("state", "off"))
+        if state != self.state:
+            self.since = time.monotonic()
+        self.state = state if state in self.STATES else "off"
+        self.level = max(0.0, min(1.0, float(msg.get("level", 0.0))))
+        if self.state == "off":
+            self.win.set_visible(False)
+            self.ticking = False
+            return
+        self.theme.reload()
+        if not self.win.get_visible():
+            self.smooth = 0.0
+            self.win.set_visible(True)
+            self.on_realize()
+        if not self.ticking:
+            self.ticking = True
+            GLib.timeout_add(33, self.tick)
+
+    def tick(self) -> bool:
+        if self.state == "off" or not self.win.get_visible():
+            self.ticking = False
+            return False
+        self.smooth += (self.level - self.smooth) * 0.35      # follow the voice, without jitter
+        self.area.queue_draw()
+        return True
+
+    def color(self) -> tuple[float, float, float]:
+        if self.state == "error":
+            return self.theme.warn
+        return self.theme.accent
+
+    def draw(self, _area, cr, width, height) -> None:
+        cx, cy = width / 2, height / 2
+        t = time.monotonic() - self.since
+        r, g, b = self.color()
+
+        if self.state == "listening":                      # slow breathing
+            core = 13 + 1.6 * math.sin(t * 2.0)
+            alpha, halo = 0.55, 2.9
+        elif self.state == "hearing":                      # follows the voice
+            core = 14 + 22 * self.smooth
+            alpha, halo = 0.75 + 0.2 * self.smooth, 3.4
+        elif self.state == "thinking":                     # quicker pulse while it decides
+            core = 15 + 3.5 * math.sin(t * 7.0)
+            alpha, halo = 0.7, 3.1
+        elif self.state == "acting":                       # one bright bloom
+            age = min(1.0, t / 0.45)
+            core = 16 + 26 * (1 - age)
+            alpha, halo = 0.85 * (1 - age) + 0.25, 3.6
+        elif self.state == "transcribe":                   # steady and wide: it is recording you
+            core = 17 + 1.2 * math.sin(t * 3.2) + 14 * self.smooth
+            alpha, halo = 0.8, 3.2
+        else:                                              # error
+            core = 16 + 4 * math.sin(t * 9.0)
+            alpha, halo = 0.85, 3.0
+
+        outer = min(core * halo, self.SIZE / 2 - 6)
+        glow = cairo.RadialGradient(cx, cy, core * 0.35, cx, cy, outer)
+        glow.add_color_stop_rgba(0.0, r, g, b, alpha)
+        glow.add_color_stop_rgba(0.45, r, g, b, alpha * 0.28)
+        glow.add_color_stop_rgba(1.0, r, g, b, 0.0)
+        cr.set_source(glow)
+        cr.arc(cx, cy, outer, 0, 2 * math.pi)
+        cr.fill()
+
+        core_gradient = cairo.RadialGradient(cx - core * 0.3, cy - core * 0.35, core * 0.1, cx, cy, core)
+        core_gradient.add_color_stop_rgba(0.0, min(1, r + 0.35), min(1, g + 0.35), min(1, b + 0.35), 0.98)
+        core_gradient.add_color_stop_rgba(1.0, r, g, b, 0.92)
+        cr.set_source(core_gradient)
+        cr.arc(cx, cy, core, 0, 2 * math.pi)
+        cr.fill()
+
+        if self.state == "thinking":                       # a ring that goes round while it decides
+            cr.set_source_rgba(r, g, b, 0.9)
+            cr.set_line_width(2.5)
+            start = (t * 3.0) % (2 * math.pi)
+            cr.arc(cx, cy, core + 9, start, start + 1.4)
+            cr.stroke()
+
+
 class Overlay:
-    def __init__(self, app: Gtk.Application) -> None:
+    def __init__(self, app: Gtk.Application, theme: Theme | None = None) -> None:
+        self.theme = theme or Theme()
         self.win = Gtk.ApplicationWindow(application=app)
         Layer.init_for_window(self.win)
         Layer.set_layer(self.win, Layer.Layer.OVERLAY)
@@ -85,6 +256,8 @@ class Overlay:
         elif op == "hud":
             self.hud = {"text": msg.get("text", ""), "sub": msg.get("sub", ""), "tone": msg.get("tone", "ok")}
             self.hud_until = now + msg.get("ms", 2200) / 1000
+        elif op == "orb":
+            return      # handled by the orb window (see main)
         elif op == "monitor":
             self.origin = (int(msg.get("x", 0)), int(msg.get("y", 0)))
         self.refresh()
@@ -128,7 +301,7 @@ class Overlay:
         now = time.monotonic()
         for x, y, t in self.flashes:
             age = (now - t) / 0.6
-            cr.set_source_rgba(*ACCENT, max(0.0, 0.9 * (1 - age)))
+            cr.set_source_rgba(*self.theme.accent, max(0.0, 0.9 * (1 - age)))
             cr.set_line_width(3)
             cr.new_path()
             cr.arc(x, y, 8 + 34 * age, 0, 2 * math.pi)
@@ -211,7 +384,8 @@ class Overlay:
 
     def draw_hud(self, cr, width, height) -> None:
         text, sub = self.hud["text"], self.hud["sub"]
-        tone = {"ok": ACCENT, "warn": WARN, "busy": (0.6, 0.7, 1.0)}.get(self.hud["tone"], ACCENT)
+        accent = self.theme.accent
+        tone = {"ok": accent, "warn": self.theme.warn, "busy": (0.6, 0.7, 1.0)}.get(self.hud["tone"], accent)
         cr.select_font_face(FONT, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
         cr.set_font_size(18)
         e1 = cr.text_extents(text)
@@ -221,7 +395,7 @@ class Overlay:
         w = max(e1.x_advance, e2.x_advance if e2 else 0) + 40
         h = 58 if sub else 40
         x, y = (width - w) / 2, height - h - 36
-        cr.set_source_rgba(*BADGE_BG, 0.92)
+        cr.set_source_rgba(*self.theme.background, 0.94)
         self.rounded(cr, x, y, w, h, 14)
         cr.fill()
         cr.set_source_rgba(*tone, 1)
@@ -241,7 +415,8 @@ class Overlay:
 
 
 def main() -> None:
-    app = Gtk.Application(application_id="dev.jev.voice.overlay")
+    # one overlay per daemon; a second instance with the same id would hand over and exit
+    app = Gtk.Application(application_id=os.environ.get("OMARCHY_VOICE_OVERLAY_ID", "org.omarchy.voice.overlay"))
     state = {}
 
     def on_line(channel, _cond):
@@ -250,13 +425,20 @@ def main() -> None:
             app.quit()
             return False
         try:
-            state["overlay"].apply(json.loads(line))
+            msg = json.loads(line)
+            if msg.get("op") == "orb":
+                state["orb"].apply(msg)
+            else:
+                state["overlay"].apply(msg)
         except Exception as exc:
             print(f"overlay: {exc}", file=sys.stderr, flush=True)
         return True
 
     def on_activate(app):
-        state["overlay"] = Overlay(app)
+        theme = Theme()
+        state["overlay"] = Overlay(app, theme)
+        state["orb"] = Orb(app, theme)
+        GLib.timeout_add_seconds(5, lambda: (theme.reload(), True)[1])   # follow `omarchy theme set`
         app.hold()
         channel = GLib.IOChannel.unix_new(sys.stdin.fileno())
         GLib.io_add_watch(channel, GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, on_line)

@@ -11,8 +11,11 @@ Everything open-ended ("snap the browser to the right half", "click the sign in 
 from what is on your screen. Jev only ever *picks* from the windows, buttons and
 actions that exist — it never writes commands.
 
-A microphone in the bar shows whether it is listening. Its panel is a live trace: what
-was heard, how it was understood, what was done and how long it took.
+A glowing orb sits above the bottom edge whenever voice control is listening, in your
+Omarchy theme's accent colour: it breathes while it waits, follows your voice while you
+speak, pulses while it decides and blooms when it acts. A microphone in the bar shows the
+same state, and its panel is a live trace: what was heard, how it was understood, what was
+done and how long it took.
 
 ## Install
 

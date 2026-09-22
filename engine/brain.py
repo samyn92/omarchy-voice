@@ -400,6 +400,11 @@ class Brain:
             self._hud_texts = [(t, x) for t, x in self._hud_texts if now - t < 30] + [(now, text), (now, sub)]
             self.overlay.send(op="hud", text=text, sub=sub, tone=tone, ms=ms)
 
+    def orb(self, state: str, level: float = 0.0) -> None:
+        """The glowing orb: listening · hearing · thinking · acting · transcribe · error · off."""
+        if self.settings.get("orb", True):
+            self.overlay.send(op="orb", state=state, level=round(level, 3))
+
     def is_own_text(self, text: str) -> bool:
         """Text the overlay showed in the last 30 s (OCR reads it back from the screen)."""
         t = text.lower().strip()

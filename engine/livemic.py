@@ -203,7 +203,7 @@ class LiveVAD:
         return audio16, "utterance"
 
 
-    def utterances(self, active_check, on_speech=None, max_seconds=MAX_UTTERANCE_S, on_end=None):
+    def utterances(self, active_check, on_speech=None, max_seconds=MAX_UTTERANCE_S, on_end=None, on_level=None):
         """Yield one 16 kHz utterance after another from a microphone stream that stays open.
 
         Unlike record_utterance(), nothing is lost while the caller is busy with the
@@ -251,6 +251,11 @@ class LiveVAD:
                 since_vad = 0
                 window = np.concatenate(heard[-(int(n_window / self.block) + 1):])
                 window16 = _resample(window[-n_window:], self.rate, WHISPER_RATE)
+                if on_level:   # how loud it is right now, for the orb (0…1, speech sits around 0.15)
+                    try:
+                        on_level(min(1.0, float(np.sqrt(np.mean(np.square(window16[-self.block:])))) / 0.15))
+                    except Exception:
+                        pass
                 last_end = self._speech_at_tail(window16)
                 silence_ago = (len(window16) / WHISPER_RATE - last_end) if last_end is not None else None
                 done = False

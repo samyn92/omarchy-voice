@@ -215,6 +215,7 @@ DEFAULT_SETTINGS = {
     "keep_history": True,          # ~/.local/state/omarchy-voice/history.jsonl — what was heard and done, local only
     "default_agent": "",           # herdr agent kind for "new agent" ("" = the kind you run most)
     "fast_stt_model": "base.en",   # in-process Whisper for instant simple commands; "" to disable
+    "orb": True,                   # the glowing orb in the theme's accent colour while listening
     "autopilot_stage": 2,          # 1 look only · 2 may fill in, asks before committing · 3 also acts alone on trusted sites
     "autopilot_trusted_sites": [],  # stage 3 only, e.g. ["github.com"] — money/deletions/logins always ask
     "autopilot_max_steps": 14,     # a goal gives up after this many steps
@@ -430,6 +431,7 @@ class VoiceController:
         status = "listening" if enabled else "idle"
         message = "Listening" if enabled else "Voice control paused"
         self.notify(message)
+        self.orb(self.orb_rest())
         return self.state.update(listening=enabled, status=status, message=message)
 
     def set_yolo(self, enabled: bool) -> dict[str, object]:
@@ -550,11 +552,16 @@ class VoiceController:
 
     def handle_transcript(self, transcript: str, decision=None, alternatives: tuple[str, ...] = ()) -> dict[str, object]:
         with self.handling:
-            return self._handle_transcript(transcript, decision, alternatives)
+            try:
+                return self._handle_transcript(transcript, decision, alternatives)
+            finally:
+                threading.Timer(0.5, lambda: self.orb(self.orb_rest())).start()
 
     def _handle_transcript(self, transcript: str, decision=None, alternatives: tuple[str, ...] = ()) -> dict[str, object]:
         spoken = normalize(transcript)
         self.state.update(transcript=transcript, status="deciding", message="Understanding command")
+        if self.orb_rest() != "transcribe":
+            self.orb("thinking")
         if spoken in ENABLE_YOLO_WORDS:
             return self.set_yolo(True)
         if spoken in DISABLE_YOLO_WORDS:
@@ -624,6 +631,7 @@ class VoiceController:
         sub = f"{decision.source} · {decision.ms.get('total', 0)} ms" + (f" ({timing})" if timing else "")
         print(f"[omarchy-voice] {transcript!r} -> {decision.action.kind + ': ' + decision.action.label if decision.action else ('ignored' if decision.ignored else decision.say)} | {sub}", flush=True)
         if decision.ignored:
+            self.orb(self.orb_rest())
             if decision.hud:
                 self.brain.hud(decision.hud, tone="busy", ms=1200)
             return self.state.update(status=idle, message="Not a command", source=decision.source, latency_ms=decision.ms.get("total", 0))
@@ -647,6 +655,7 @@ class VoiceController:
             self.brain.hud(f"Confirm: {action.label}?", "say confirm or cancel", tone="warn", ms=8000)
             return self.set_pending(action, 1.0, decision.source)
         self.brain.hud(f"“{transcript[:60]}”", f"{action.label} · {sub}")
+        self.orb("acting")
         if decision.say:
             self.say(decision.say)
         t_exec = time.perf_counter()
@@ -892,12 +901,35 @@ class VoiceController:
             print(f"[omarchy-voice] warm-up: {exc}", file=sys.stderr, flush=True)
             traceback.print_exc()
 
+    def orb_rest(self) -> str:
+        """What the orb shows when nothing is happening right now."""
+        if not LISTENING_PATH.exists():
+            return "off"
+        if self.brain is not None and (self.brain.mode == "transcribe" or voxtype_state() == "recording"):
+            return "transcribe"
+        return "listening"
+
+    def orb(self, state: str, level: float = 0.0) -> None:
+        if self.brain is not None:
+            self.brain.orb(state, level)
+
+    def on_level(self, level: float) -> None:
+        if self.brain is None:
+            return
+        rest = self.orb_rest()
+        if rest == "off":
+            return
+        if self.speaking or rest == "transcribe":
+            self.brain.orb("transcribe" if rest == "transcribe" else "hearing", level)
+
     def on_speech_end(self) -> None:
         self.speaking = False
         self.last_speech_end = time.monotonic()
+        self.orb(self.orb_rest())
 
     def on_speech(self) -> None:
         self.speaking = True
+        self.orb("hearing", 0.4)
         if self.brain is not None and self.brain.mode not in ("dictation", "transcribe") and voxtype_state() != "recording":
             self.brain.prefetch()
 
@@ -943,7 +975,7 @@ class VoiceController:
                         self.state.update(status="listening", message="Microphone reconnected", last_ok=True)
                         failures = 0
                     for audio in vad.utterances(lambda: self.running and LISTENING_PATH.exists(), on_speech=self.on_speech,
-                                                on_end=self.on_speech_end):
+                                                on_end=self.on_speech_end, on_level=self.on_level):
                         utterances.put((audio, voxtype_state()))
                 except Exception as exc:
                     failures += 1
@@ -1100,8 +1132,10 @@ def run_daemon() -> int:
     signal.signal(signal.SIGINT, stop)
     try:
         controller.load_models()
+        controller.orb(controller.orb_rest())    # listening was on before a restart
         controller.run_audio()
     finally:
+        controller.orb("off")
         server.shutdown()
         server.server_close()
         SOCKET_PATH.unlink(missing_ok=True)
