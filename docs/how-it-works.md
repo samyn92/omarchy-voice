@@ -57,6 +57,14 @@ second result" or "the one under the mouse" can be resolved.
 
 Before anything is typed the bar panel closes, because an open panel holds the keyboard.
 
+## The orb
+
+The engine never draws the orb. It streams one `{state, level}` line per 25 ms to
+`$XDG_RUNTIME_DIR/omarchy-voice/orb.sock`, and the bar plugin's `Orb.qml` draws it on its
+own layer surface through Qt's scene graph — GPU-composited and locked to the monitor's
+refresh, like the rest of the Omarchy shell. A client that cannot keep up is skipped rather
+than waited for, so drawing can never stall the microphone thread.
+
 ## Working towards a goal
 
 A goal runs a loop: read the page, ask Jev for the single next step out of the elements that

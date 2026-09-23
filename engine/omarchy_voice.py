@@ -30,11 +30,73 @@ RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 STATE_PATH = RUNTIME_DIR / "state.json"
 LISTENING_PATH = RUNTIME_DIR / "listening"
 SOCKET_PATH = RUNTIME_DIR / "control.sock"
+ORB_SOCKET_PATH = RUNTIME_DIR / "orb.sock"     # one line per change, for the bar widget's orb
 TRACE_PATH = RUNTIME_DIR / "trace.json"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "omarchy-voice"
 HISTORY_PATH = STATE_DIR / "history.jsonl"   # every utterance and its outcome; stays on this machine
 TESTING_PATH = RUNTIME_DIR / "testing"         # set by the e2e scripts: their speech is not the user's
 VOXTYPE_STATE = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "voxtype" / "state"
+
+
+class OrbStream:
+    """Pushes {state, level} lines to whoever listens — the orb in the bar plugin.
+
+    Levels are disposable: a client that cannot keep up is skipped, never waited for, so
+    the audio thread is never blocked by drawing.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.clients: list[socket.socket] = []
+        self.lock = threading.Lock()
+        self.last = '{"state": "off", "level": 0}'
+        self.server: socket.socket | None = None
+
+    def start(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.unlink(missing_ok=True)
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(self.path))
+        self.server.listen(4)
+        threading.Thread(target=self._accept, name="orb-stream", daemon=True).start()
+
+    def _accept(self) -> None:
+        while self.server is not None:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            client.setblocking(False)
+            with self.lock:
+                self.clients.append(client)
+            try:            # the current state, so a widget that starts later is not blank
+                client.sendall((self.last + "\n").encode())
+            except OSError:
+                pass
+
+    def publish(self, state: str, level: float) -> None:
+        line = json.dumps({"state": state, "level": round(float(level), 3)})
+        self.last = line
+        data = (line + "\n").encode()
+        with self.lock:
+            for client in list(self.clients):
+                try:
+                    client.sendall(data)
+                except BlockingIOError:
+                    pass          # its buffer is full: skip this level, the next one is 25 ms away
+                except OSError:
+                    self.clients.remove(client)
+                    client.close()
+
+    def stop(self) -> None:
+        server, self.server = self.server, None
+        if server:
+            server.close()
+        with self.lock:
+            for client in self.clients:
+                client.close()
+            self.clients.clear()
+        self.path.unlink(missing_ok=True)
 
 
 def voxtype_state() -> str:
@@ -394,6 +456,7 @@ class VoiceController:
         self.autopilot = None              # the goal being worked on, while one is running
         self.autopilot_stop = threading.Event()
         self._orb_busy = False             # while true, the level stream leaves the orb alone
+        self.orb_stream = OrbStream(ORB_SOCKET_PATH)
         self._orb_sent = (0.0, 0.0)        # (level, when): silence is not worth a message every 30 ms
         self.autopilot_reply: threading.Event | None = None
         self.autopilot_said_yes = False
@@ -914,12 +977,12 @@ class VoiceController:
     def orb(self, state: str, level: float = 0.0) -> None:
         # thinking and acting own the orb until the next rest, so the level stream cannot overwrite them
         self._orb_busy = state in ("thinking", "acting")
-        if self.brain is not None:
-            self.brain.orb(state, level)
+        if self.settings.get("orb", True):
+            self.orb_stream.publish(state, level)
 
     def on_level(self, level: float) -> None:
         """Every 30 ms block while listening: the orb must move before the VAD has decided."""
-        if self.brain is None or self._orb_busy:
+        if self._orb_busy:
             return                       # thinking / acting own the orb until they are done
         rest = self.orb_rest()
         if rest == "off":
@@ -930,11 +993,11 @@ class VoiceController:
             return                       # nothing changed worth drawing
         self._orb_sent = (level, now)
         if rest == "transcribe":
-            self.brain.orb("transcribe", level)
+            self.orb("transcribe", level)
         elif self.speaking or level > 0.02:
-            self.brain.orb("hearing", level)
+            self.orb("hearing", level)
         else:
-            self.brain.orb("listening", level)
+            self.orb("listening", level)
 
     def on_speech_end(self) -> None:
         self.speaking = False
@@ -1145,11 +1208,13 @@ def run_daemon() -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
+        controller.orb_stream.start()
         controller.load_models()
         controller.orb(controller.orb_rest())    # listening was on before a restart
         controller.run_audio()
     finally:
         controller.orb("off")
+        controller.orb_stream.stop()
         server.shutdown()
         server.server_close()
         SOCKET_PATH.unlink(missing_ok=True)

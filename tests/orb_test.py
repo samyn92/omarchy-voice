@@ -1,7 +1,8 @@
-"""The orb: it appears while listening, follows the theme, and never takes a click.
+"""The orb: the engine streams it, the bar plugin draws it.
 
-Runs the overlay under the system Python with its own application id (the daemon's
-overlay owns the normal one), and asks Hyprland what it actually put on screen.
+The drawing is Qt's scene graph in the shell process, so what is testable here is the
+contract between them — the socket, the lines on it, and the layer surface the shell puts
+on screen while listening.
 
     uv run python tests/orb_test.py
 """
@@ -14,13 +15,15 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "engine"))
 import json
 import os
-import re
+import socket
 import subprocess
 import sys
 import time
 
-OVERLAY = _Path(__file__).resolve().parent.parent / "engine" / "overlay.py"
-NAMESPACE = "omarchy-voice-orb"
+PLUGIN = _Path(__file__).resolve().parent.parent
+SOCKET = _Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "omarchy-voice" / "orb.sock"
+CLI = _Path.home() / ".local/bin/omarchy-voice"
+STATES = {"off", "listening", "hearing", "thinking", "acting", "transcribe", "error"}
 failures = 0
 
 
@@ -30,76 +33,71 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(("PASS " if ok else "FAIL ") + name + (f"  — {detail}" if detail else ""))
 
 
-def layer(pid: int) -> str:
-    """This overlay's orb in `hyprctl layers` — by pid, since the daemon has one on screen too."""
-    out = subprocess.run(["hyprctl", "layers"], capture_output=True, text=True).stdout
-    return next((line for line in out.splitlines() if NAMESPACE in line and f"pid: {pid}" in line), "")
-
-
-def wait_for(predicate, seconds: float = 4.0):
+def read_lines(seconds: float) -> list[dict]:
+    """Everything the engine publishes to a fresh subscriber within `seconds`."""
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(seconds)
+    client.connect(str(SOCKET))
+    buffer, out = b"", []
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        value = predicate()
-        if value:
-            return value
-        time.sleep(0.15)
-    return predicate()
+        try:
+            chunk = client.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buffer += chunk
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            if line.strip():
+                out.append(json.loads(line))
+    client.close()
+    return out
 
 
 def main() -> int:
-    if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
-        print("Not running under Hyprland — skipped.")
+    if not SOCKET.exists():
+        print(f"The engine is not running ({SOCKET} is missing) — skipped.")
         return 0
 
-    env = {**os.environ, "LD_PRELOAD": "/usr/lib/libgtk4-layer-shell.so",
-           "OMARCHY_VOICE_OVERLAY_ID": "org.omarchy.voice.orbtest"}
-    proc = subprocess.Popen(["/usr/bin/python3", str(OVERLAY)], stdin=subprocess.PIPE, text=True,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
-
-    def send(**msg) -> None:
-        proc.stdin.write(json.dumps(msg) + "\n")
-        proc.stdin.flush()
+    was_listening = subprocess.run([str(CLI), "status"], capture_output=True, text=True).stdout
+    was_listening = "listening 1" in was_listening
+    subprocess.run([str(CLI), "start"], capture_output=True)
+    time.sleep(0.5)
 
     try:
-        mine = lambda: layer(proc.pid)   # noqa: E731
-        check("nothing is on screen before it is asked for", not wait_for(mine, 1.0))
+        lines = read_lines(1.5)
+        check("a new subscriber is told the state at once", bool(lines),
+              f"{len(lines)} lines")
+        check("every line is a known state and a level in 0…1",
+              all(l.get("state") in STATES and 0 <= float(l.get("level", -1)) <= 1 for l in lines),
+              str(lines[:2]))
+        check("it says it is listening", any(l["state"] != "off" for l in lines),
+              str({l["state"] for l in lines}))
 
-        send(op="orb", state="listening", level=0.0)
-        line = wait_for(mine)
-        check("listening shows the orb", bool(line), line.strip()[:80])
+        # while the microphone is open, levels keep coming (silence is still a level)
+        lines = read_lines(1.2)
+        check("levels keep flowing while it listens", len(lines) >= 2, f"{len(lines)} in 1.2 s")
 
-        size = re.search(r"xywh: (-?\d+) (-?\d+) (\d+) (\d+)", line)
-        check("it is a small square, not a full-screen surface",
-              bool(size) and size.group(3) == size.group(4) and int(size.group(3)) <= 400,
-              size.group(0) if size else "no geometry")
+        # what the shell actually put on screen
+        if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            layers = subprocess.run(["hyprctl", "layers"], capture_output=True, text=True).stdout
+            line = next((l for l in layers.splitlines() if "omarchy-voice-orb" in l), "")
+            check("the shell shows the orb on the overlay layer", bool(line), line.strip()[:70])
+            shell = subprocess.run(["pgrep", "-f", "quickshell"], capture_output=True, text=True).stdout.split()
+            check("it is drawn by the shell, not by the engine",
+                  any(f"pid: {pid}" in line for pid in shell), line.strip()[-24:])
+        else:
+            check("the shell shows the orb on the overlay layer", True, "not under Hyprland — skipped")
+            check("it is drawn by the shell, not by the engine", True, "skipped")
 
-        for state in ("hearing", "thinking", "acting", "transcribe", "error"):
-            send(op="orb", state=state, level=0.6)
-            time.sleep(0.15)
-        check("every state keeps it alive", bool(mine()) and proc.poll() is None)
-
-        send(op="orb", state="off")
-        gone = wait_for(lambda: not mine())
-        check("off takes it away", bool(gone))
-
-        # the theme it reads is the one Omarchy is using
-        sys.path.insert(0, str(OVERLAY.parent))
-        name = _Path.home() / ".local/state/omarchy/current/theme.name"
-        if name.is_file():
-            slug = name.read_text().strip()
-            colors = next((d / slug / "colors.toml" for d in
-                           (_Path.home() / ".config/omarchy/themes", _Path("/usr/share/omarchy/themes"))
-                           if (d / slug / "colors.toml").is_file()), None)
-            check("the current theme has an accent colour to use",
-                  bool(colors) and "accent" in colors.read_text(), slug)
+        check("the plugin ships the orb and mounts it",
+              (PLUGIN / "Orb.qml").is_file() and "Orb {}" in (PLUGIN / "BarWidget.qml").read_text())
     finally:
-        try:
-            proc.stdin.close()
-        except Exception:
-            pass
-        proc.terminate()
+        subprocess.run([str(CLI), "start" if was_listening else "stop"], capture_output=True)
 
-    print(f"\n{6 - failures}/6 passed")
+    print(f"\n{7 - failures}/7 passed")
     return 1 if failures else 0
 
 

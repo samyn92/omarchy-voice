@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Click-through on-screen overlay: hint badges, the zoom grid, click flashes, HUD, the orb.
+"""Click-through on-screen overlay: hint badges, the zoom grid, click flashes, HUD.
 
 Runs under the system Python (PyGObject + gtk4-layer-shell).  The layer shell
 library must be loaded before GTK, so start it with
@@ -12,7 +12,6 @@ JSON lines on stdin (coordinates are logical screen pixels):
   {"op": "hud", "text": "…", "sub": "…", "ms": 2500, "tone": "ok|warn|busy"}
   {"op": "clear"}           hints + grid
   {"op": "monitor", "x": 0, "y": 0}
-  {"op": "orb", "state": "listening|hearing|thinking|acting|transcribe|error|off", "level": 0.0}
 """
 
 import json
@@ -80,195 +79,6 @@ class Theme:
         self.warn = hex_rgb(data.get("yellow", ""), WARN)
 
 
-class Orb:
-    """A soft glowing circle in the theme's accent colour: voice control is listening.
-
-    Its own small layer surface, so the breathing animation repaints a 260 px square
-    instead of the whole screen.
-    """
-
-    SIZE = 260
-    STATES = ("listening", "hearing", "thinking", "acting", "transcribe", "error")
-
-    def __init__(self, app: Gtk.Application, theme: Theme) -> None:
-        self.theme = theme
-        self.state = "off"
-        self.level = 0.0
-        self.smooth = 0.0
-        self.peak = 0.0
-        self.history = [0.0] * 72      # the last ~1.8 s at a steady 40 Hz, drawn around the rim
-        self.last_push = 0.0
-        self.since = time.monotonic()
-        self.ticking = False
-        self.interval = 16
-        self.win = Gtk.ApplicationWindow(application=app)
-        Layer.init_for_window(self.win)
-        Layer.set_layer(self.win, Layer.Layer.OVERLAY)
-        Layer.set_namespace(self.win, "omarchy-voice-orb")
-        Layer.set_keyboard_mode(self.win, Layer.KeyboardMode.NONE)
-        Layer.set_exclusive_zone(self.win, -1)
-        Layer.set_anchor(self.win, Layer.Edge.BOTTOM, True)
-        Layer.set_margin(self.win, Layer.Edge.BOTTOM, 86)   # clear of the HUD, which sits at the bottom too
-        self.win.set_default_size(self.SIZE, self.SIZE)
-        css = Gtk.CssProvider()
-        css.load_from_string("window { background: transparent; }")
-        Gtk.StyleContext.add_provider_for_display(self.win.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        self.area = Gtk.DrawingArea()
-        self.area.set_content_width(self.SIZE)
-        self.area.set_content_height(self.SIZE)
-        self.area.set_draw_func(self.draw)
-        self.win.set_child(self.area)
-        self.win.connect("realize", self.on_realize)
-        self.win.connect("map", self.on_realize)
-
-    def on_realize(self, *_):
-        surface = self.win.get_surface()
-        if surface:
-            surface.set_input_region(cairo.Region())   # never steal a click
-
-    def apply(self, msg: dict) -> None:
-        state = str(msg.get("state", "off"))
-        if state != self.state:
-            self.since = time.monotonic()
-        self.state = state if state in self.STATES else "off"
-        self.level = max(0.0, min(1.0, float(msg.get("level", 0.0))))
-        if self.level > self.smooth:
-            self.smooth = self.level     # attack now; the tick only handles the fall
-        if self.state == "off":
-            self.win.set_visible(False)
-            self.ticking = False
-            return
-        self.theme.reload()
-        if not self.win.get_visible():
-            self.smooth = 0.0
-            self.win.set_visible(True)
-            self.on_realize()
-        if not self.ticking:
-            self.ticking = True
-            self.interval = self.wanted_interval()
-            GLib.timeout_add(self.interval, self.tick)
-
-    def wanted_interval(self) -> int:
-        """60 fps while anything moves, 12 fps for quiet breathing — this runs all day."""
-        loud = max(self.level, self.smooth, self.peak, max(self.history[-24:], default=0.0))
-        moving = self.state in ("hearing", "thinking", "acting", "error") or loud > 0.02
-        return 16 if moving else 33   # 60 fps when anything moves, 30 fps for the quiet ring
-
-    def tick(self) -> bool:
-        if self.state == "off" or not self.win.get_visible():
-            self.ticking = False
-            return False
-        # fast attack, slow release: what every volume meter does, and why it reads as "instant"
-        self.smooth += (self.level - self.smooth) * (0.7 if self.level > self.smooth else 0.12)
-        self.peak = max(self.level, self.peak - 0.02)
-        # the ring moves on its own clock: messages arrive irregularly, time does not
-        now = time.monotonic()
-        if not self.last_push:
-            self.last_push = now
-        pushes = 0
-        while now - self.last_push >= 0.025 and pushes < 8:
-            self.history.append(self.smooth)
-            self.last_push += 0.025
-            pushes += 1
-        if pushes:
-            del self.history[:-72]
-        if self.smooth < 0.004:
-            self.smooth = 0.0
-        self.area.queue_draw()
-        wanted = self.wanted_interval()
-        if wanted != self.interval:            # change pace by re-arming at the new one
-            self.interval = wanted
-            GLib.timeout_add(wanted, self.tick)
-            return False
-        return True
-
-    def ring(self, cr, cx, cy, core, r, g, b) -> None:
-        """A meter around the orb: one tick per 30 ms block, newest at the top, older fading away."""
-        n = len(self.history)
-        base = 38                                       # fixed: the meter stays put while the core breathes
-        cr.set_line_cap(cairo.LINE_CAP_ROUND)
-        cr.set_line_width(2.6)
-        bands: dict[int, list[tuple[float, float, float, float]]] = {}
-        for i, level in enumerate(self.history):
-            age = (n - 1 - i) / n                       # 0 = just now, 1 = two seconds ago
-            angle = -math.pi / 2 - age * 2 * math.pi    # the newest sits at the top and drifts clockwise
-            inner, outer = base, base + 2.5 + 26 * level   # quiet moments keep a baseline tick
-            ca, sa = math.cos(angle), math.sin(angle)
-            band = int((1 - age) ** 1.6 * 8)            # 9 alpha steps: 9 strokes instead of 72
-            bands.setdefault(band, []).append((cx + inner * ca, cy + inner * sa,
-                                               cx + outer * ca, cy + outer * sa))
-        for band, segments in bands.items():
-            cr.set_source_rgba(r, g, b, band / 8 * 0.85 + 0.06)
-            cr.new_path()
-            for x0, y0, x1, y1 in segments:
-                cr.move_to(x0, y0)
-                cr.line_to(x1, y1)
-            cr.stroke()
-
-        peak = base + 4 + 26 * self.peak                # the loudest moment of the last second
-        cr.set_source_rgba(min(1, r + 0.25), min(1, g + 0.25), min(1, b + 0.25), 0.22)
-        cr.set_line_width(1.0)
-        cr.new_path()
-        cr.arc(cx, cy, peak, 0, 2 * math.pi)
-        cr.stroke()
-
-    def color(self) -> tuple[float, float, float]:
-        if self.state == "error":
-            return self.theme.warn
-        return self.theme.accent
-
-    def draw(self, _area, cr, width, height) -> None:
-        cx, cy = width / 2, height / 2
-        t = time.monotonic() - self.since
-        r, g, b = self.color()
-
-        if self.state == "listening":                      # slow breathing
-            core = 13 + 1.6 * math.sin(t * 2.0)
-            alpha, halo = 0.55, 2.9
-        elif self.state == "hearing":                      # follows the voice
-            core = 13 + 13 * self.smooth
-            alpha, halo = 0.75 + 0.2 * self.smooth, 3.4
-        elif self.state == "thinking":                     # quicker pulse while it decides
-            core = 15 + 3.5 * math.sin(t * 7.0)
-            alpha, halo = 0.7, 3.1
-        elif self.state == "acting":                       # one bright bloom
-            age = min(1.0, t / 0.45)
-            core = 16 + 26 * (1 - age)
-            alpha, halo = 0.85 * (1 - age) + 0.25, 3.6
-        elif self.state == "transcribe":                   # steady and wide: it is recording you
-            core = 15 + 1.2 * math.sin(t * 3.2) + 11 * self.smooth
-            alpha, halo = 0.8, 3.2
-        else:                                              # error
-            core = 16 + 4 * math.sin(t * 9.0)
-            alpha, halo = 0.85, 3.0
-
-        outer = min(core * halo, self.SIZE / 2 - 6)
-        glow = cairo.RadialGradient(cx, cy, core * 0.35, cx, cy, outer)
-        glow.add_color_stop_rgba(0.0, r, g, b, alpha)
-        glow.add_color_stop_rgba(0.45, r, g, b, alpha * 0.28)
-        glow.add_color_stop_rgba(1.0, r, g, b, 0.0)
-        cr.set_source(glow)
-        cr.arc(cx, cy, outer, 0, 2 * math.pi)
-        cr.fill()
-
-        core_gradient = cairo.RadialGradient(cx - core * 0.3, cy - core * 0.35, core * 0.1, cx, cy, core)
-        core_gradient.add_color_stop_rgba(0.0, min(1, r + 0.35), min(1, g + 0.35), min(1, b + 0.35), 0.98)
-        core_gradient.add_color_stop_rgba(1.0, r, g, b, 0.92)
-        cr.set_source(core_gradient)
-        cr.arc(cx, cy, core, 0, 2 * math.pi)
-        cr.fill()
-
-        if self.state in ("hearing", "transcribe", "listening"):
-            self.ring(cr, cx, cy, core, r, g, b)
-
-        if self.state == "thinking":                       # a ring that goes round while it decides
-            cr.set_source_rgba(r, g, b, 0.9)
-            cr.set_line_width(2.5)
-            start = (t * 3.0) % (2 * math.pi)
-            cr.arc(cx, cy, core + 9, start, start + 1.4)
-            cr.stroke()
-
-
 class Overlay:
     def __init__(self, app: Gtk.Application, theme: Theme | None = None) -> None:
         self.theme = theme or Theme()
@@ -322,8 +132,6 @@ class Overlay:
         elif op == "hud":
             self.hud = {"text": msg.get("text", ""), "sub": msg.get("sub", ""), "tone": msg.get("tone", "ok")}
             self.hud_until = now + msg.get("ms", 2200) / 1000
-        elif op == "orb":
-            return      # handled by the orb window (see main)
         elif op == "monitor":
             self.origin = (int(msg.get("x", 0)), int(msg.get("y", 0)))
         self.refresh()
@@ -491,11 +299,7 @@ def main() -> None:
             app.quit()
             return False
         try:
-            msg = json.loads(line)
-            if msg.get("op") == "orb":
-                state["orb"].apply(msg)
-            else:
-                state["overlay"].apply(msg)
+            state["overlay"].apply(json.loads(line))
         except Exception as exc:
             print(f"overlay: {exc}", file=sys.stderr, flush=True)
         return True
@@ -503,7 +307,6 @@ def main() -> None:
     def on_activate(app):
         theme = Theme()
         state["overlay"] = Overlay(app, theme)
-        state["orb"] = Orb(app, theme)
         GLib.timeout_add_seconds(5, lambda: (theme.reload(), True)[1])   # follow `omarchy theme set`
         app.hold()
         channel = GLib.IOChannel.unix_new(sys.stdin.fileno())

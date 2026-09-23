@@ -16,7 +16,7 @@ line change the common ones for you.
 | `look` | `"window"` | what is read for decisions: the whole window under the mouse, or `"mouse"` for just `look_region` around it |
 | `look_region` | `[1100, 700]` | size of that region in logical pixels |
 | `hud` | `true` | the line at the bottom of the screen showing what was heard and done |
-| `orb` | `true` | the glowing orb above the bottom edge, with a meter ring showing the last two seconds of your voice: it breathes while listening, moves with every syllable while you speak, pulses while deciding and blooms when it acts. Coloured from the current Omarchy theme's `accent`, follows a theme change within seconds, and drops to 12 fps when nothing moves |
+| `orb` | `true` | the glowing orb above the bottom edge, with a meter ring showing the last two seconds of your voice: it breathes while listening, moves with every syllable while you speak, pulses while deciding and blooms when it acts. The bar plugin draws it on the GPU in the theme's accent colour; the engine only streams it `{state, level}` |
 | `speak` | `true` | spoken questions and errors (actions themselves stay silent) |
 | `keep_history` | `true` | keep `~/.local/state/omarchy-voice/history.jsonl` |
 | `fast_stt_model` | `"base.en"` | the in-process Whisper model that makes simple commands instant; `""` turns it off |

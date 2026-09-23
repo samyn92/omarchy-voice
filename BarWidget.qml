@@ -8,6 +8,9 @@ BarWidget {
   id: root
   moduleName: "io.github.samyn92.omarchy-voice"
 
+  // the glowing orb above the bottom edge — its own layer surface, fed by the engine's socket
+  Orb {}
+
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") + "/omarchy-voice"
   readonly property string statePath: runtimeDir + "/state.json"
   readonly property string controlCli: Quickshell.env("HOME") + "/.local/bin/omarchy-voice"

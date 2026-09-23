@@ -4,6 +4,7 @@
 
 ```
 manifest.json, BarWidget.qml     the Omarchy plugin (bar widget + panel)
+Orb.qml                          the orb: its own layer surface, drawn by the shell on the GPU
 install.sh, uninstall.sh         engine setup and removal
 bin/omarchy-voice                the command line (runs engine/omarchy_voice.py in the venv)
 engine/
@@ -19,7 +20,7 @@ engine/
   apps.py                        installed applications
   autopilot.py                   goals in the browser: the step loop, the stages, the risk judge
   jev.py, spans.py               Jev request/answer helpers, text span candidates
-  overlay.py                     hints, grid, click flashes, HUD, the theme-coloured orb (GTK layer shell)
+  overlay.py                     hints, grid, click flashes, HUD (GTK layer shell)
   voiceio.py                     Piper voice for spoken replies
 extras/                          voxtype filter, systemd unit, keybinding examples
 tests/                           phrase test and end-to-end suites
