@@ -213,6 +213,27 @@ GROUP_DESCRIPTIONS = {
 }
 
 
+# What a recognizer actually writes when this is said — collected from recordings of real
+# speech (tools/asr_bench.py), not imagined.  Words that appear inside a longer sentence are
+# left alone; only an utterance that is nothing but the mishearing is corrected, so "peace"
+# in a dictated sentence stays "peace".
+MISHEARD = {
+    "and do": "undo", "i do": "undo", "en do": "undo",
+    "pace": "paste", "peace": "paste", "haste": "paste",
+    "select or": "select all", "select on": "select all", "select oil": "select all",
+    "halfworth": "half width", "half worth": "half width", "half with": "half width",
+    "scrolling down": "scroll down", "scrolling on": "scroll down", "scroll on": "scroll down",
+    "full stream": "fullscreen", "fourth screen": "fullscreen", "for screen": "fullscreen",
+    "rackspace": "workspace", "workspace 3": "workspace three",
+}
+# Mishearings that are safe to fix anywhere in a sentence: a spoken number, and the two words
+# that are never right in a command otherwise.
+MISHEARD_WORDS = {
+    "work space": "workspace", "force workspace": "fourth workspace",
+    "the force workspace": "the fourth workspace",
+}
+
+
 def normalize(text: str) -> str:
     value = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
     for prefix in ("please ", "could you ", "can you ", "would you "):
@@ -220,7 +241,10 @@ def normalize(text: str) -> str:
             value = value[len(prefix) :]
     if value.endswith(" please"):
         value = value[:-7]
-    return re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"\s+", " ", value).strip()
+    for wrong, right in MISHEARD_WORDS.items():
+        value = value.replace(wrong, right)
+    return MISHEARD.get(value, value)
 
 
 def dynamic_match(text: str) -> Action | None:

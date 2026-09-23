@@ -56,6 +56,17 @@ CASES = [
     ("what is this page about", "What is this page about?", "Read screen"),
     ("figure out when the market opens", "Figure out when the market opens.", "Goal: when the market opens"),
     ("autopilot book a table for two", "Autopilot book a table for two.", "Goal: book a table for two"),
+    # what recognizers actually wrote for real speech (tools/asr_bench.py, recorded voice)
+    ("And do.", "I do.", "Undo"),
+    ("Pace", "Peace.", "Paste"),
+    ("Select or", "Select on", "Select all"),
+    ("Work space three.", "Workspace three.", "Workspace 3"),
+    ("halfworth.", "half worth", "Half"),
+    ("Move this window to the Force workspace", "Move this window to the fourth workspace", "Move to workspace 4"),
+    ("Fourth screen", "Full stream", "fullscreen"),
+    ("scrolling down", "Scrolling down.", "Scroll down"),
+    # a mishearing that must stay unacted: "play" comes out as "Hello!", which is chatter
+    ("Hello!", "Helly", None),
     # never acted on locally: chatter, fragments, unfinished sentences
     ("Alright.", "It's alright.", None), ("Hello Hello", "Hello, hello.", None), ("okay", "Okay.", None),
     ("right", "Right.", None), ("go on", "Go on.", None), ("close it", "Close it.", None),

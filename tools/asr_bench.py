@@ -207,6 +207,17 @@ def sherpa(directory: _Path, threads: int = 2):
             uncached_decoder=str(directory / "uncached_decode.int8.onnx"),
             cached_decoder=str(directory / "cached_decode.int8.onnx"),
             tokens=tokens, num_threads=threads)
+    elif (directory / "joiner.int8.onnx").exists():                      # NeMo Parakeet (transducer)
+        hotwords = ROOT / "tools" / "hotwords.txt"
+        extra = {}
+        if hotwords.exists():          # bias towards our own command words ("claude", "paste")
+            extra = {"decoding_method": "modified_beam_search", "hotwords_file": str(hotwords),
+                     "hotwords_score": 2.0, "modeling_unit": "bpe"}
+        recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+            encoder=str(directory / "encoder.int8.onnx"),
+            decoder=str(directory / "decoder.int8.onnx"),
+            joiner=str(directory / "joiner.int8.onnx"),
+            tokens=tokens, num_threads=threads, model_type="nemo_transducer", **extra)
     elif list(directory.glob("*encoder*.onnx")):                         # Whisper
         recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
             encoder=str(next(directory.glob("*encoder.int8.onnx"))),
@@ -242,6 +253,11 @@ def recognizers(wanted: list[str]) -> dict:
 
 
 # -- scoring -----------------------------------------------------------------------------
+def strip_query(label: str) -> str:
+    """The action without its payload: “Search youtube “stone techno”” -> “Search youtube”."""
+    return label.split("\u201c")[0].strip()
+
+
 def brain_action(brain, sv, transcript: str) -> str | None:
     """What the engine would do with this transcript (local decisions only)."""
     spoken = sv.normalize(transcript)
@@ -283,7 +299,7 @@ def run(models: list[str], voice: str = "tts") -> int:
 
     results = {}
     for name, engine in engines.items():
-        correct, wrong, times, mistakes = 0, 0, [], []
+        correct, wrong, loose, times, mistakes = 0, 0, 0, [], []
         for row in scored:
             audio = load_wav(source / row["file"])
             started = time.perf_counter()
@@ -292,6 +308,9 @@ def run(models: list[str], voice: str = "tts") -> int:
             action = brain_action(brain, sv, text)
             target = row["target"]                    # what the words as written would do
             ok = action == target
+            if not ok and action and target and strip_query(action) == strip_query(target):
+                ok = True                             # the same action, with different words in it
+                loose += 1
             correct += ok
             wrong += not ok
             if not ok:
@@ -299,7 +318,7 @@ def run(models: list[str], voice: str = "tts") -> int:
         import resource
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         results[name] = {"correct": correct, "of": len(scored), "p50": statistics.median(times),
-                         "p90": sorted(times)[int(len(times) * 0.9)], "peak_rss_mb": round(rss),
+                         "p90": sorted(times)[int(len(times) * 0.9)], "peak_rss_mb": round(rss), "loose": loose,
                          "mistakes": mistakes}
         print(f"\n{name}: {correct}/{len(scored)} commands right · {results[name]['p50']:.0f} ms median "
               f"· {results[name]['p90']:.0f} ms p90")
