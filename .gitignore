@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .venv/
+ear/target/
+tools/corpus/
+tools/bench-results.json

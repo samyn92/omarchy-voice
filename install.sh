@@ -117,6 +117,39 @@ ok "spoken replies: Piper voice \"amy\""
 "$VENV/bin/python" -c 'from faster_whisper import WhisperModel; WhisperModel("base.en", device="cpu", compute_type="int8")' >/dev/null 2>&1
 ok "fast recognizer: Whisper base.en"
 
+step "Fast recognizer (the ear)"
+EAR_BIN="$DATA_DIR/bin/ear"
+MODEL_DIR="$DATA_DIR/asr-models/parakeet-tdt-110m"
+if [[ ! -d $MODEL_DIR ]] && ask "Download the command recognizer (136 MB, Parakeet)?"; then
+  mkdir -p "$DATA_DIR/asr-models"
+  archive="sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8"
+  curl -fL --progress-bar \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$archive.tar.bz2" \
+    -o "$DATA_DIR/asr-models/$archive.tar.bz2"
+  tar -xjf "$DATA_DIR/asr-models/$archive.tar.bz2" -C "$DATA_DIR/asr-models"
+  mv "$DATA_DIR/asr-models/$archive" "$MODEL_DIR"
+  rm -f "$DATA_DIR/asr-models/$archive.tar.bz2"
+fi
+if [[ -d $MODEL_DIR ]]; then
+  if [[ -x $PLUGIN_DIR/ear/target/release/ear ]] || command -v cargo >/dev/null; then
+    if [[ ! -x $PLUGIN_DIR/ear/target/release/ear ]]; then
+      note "building the ear (a few minutes the first time)"
+      (cd "$PLUGIN_DIR/ear" && cargo build --release --quiet)
+    fi
+    mkdir -p "$DATA_DIR/bin"
+    install -m755 "$PLUGIN_DIR/ear/target/release/ear" "$EAR_BIN"
+    install -Dm644 "$PLUGIN_DIR/extras/omarchy-voice-ear.service" "$UNIT_DIR/omarchy-voice-ear.service"
+    systemctl --user daemon-reload
+    systemctl --user enable --now omarchy-voice-ear.service >/dev/null 2>&1 || true
+    ok "the ear is running (~25 ms per command, and the engine keeps a gigabyte less in memory)"
+  else
+    note "no rust toolchain: the engine will recognize speech itself (slower, heavier)"
+    note "  install rust and run this again for the fast path: omarchy pkg add rust"
+  fi
+else
+  note "skipped — the engine will recognize speech itself"
+fi
+
 step "Service"
 mkdir -p "$HOME/.local/bin" "$UNIT_DIR"
 ln -sf "$PLUGIN_DIR/bin/omarchy-voice" "$HOME/.local/bin/omarchy-voice"

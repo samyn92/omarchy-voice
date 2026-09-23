@@ -4,7 +4,8 @@ Control Omarchy by talking to it. Open apps, arrange windows, switch workspaces,
 things on screen, browse, dictate text and drive your coding agents in herdr — without
 touching the keyboard or the mouse.
 
-Speech is recognized on your machine by Whisper. Common commands ("scroll down",
+Speech is recognized on your machine — about 25 ms per command, by a small Rust service
+that owns the microphone. Common commands ("scroll down",
 "select left", "new claude") are understood locally in a fraction of a second.
 Everything open-ended ("snap the browser to the right half", "click the sign in button",
 "tell the agentops agent to run the tests") is decided by [Jev](https://openrouter.ai)

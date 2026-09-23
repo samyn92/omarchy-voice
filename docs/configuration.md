@@ -19,7 +19,8 @@ line change the common ones for you.
 | `orb` | `true` | the glowing orb above the bottom edge, with a meter ring showing the last two seconds of your voice: it breathes while listening, moves with every syllable while you speak, pulses while deciding and blooms when it acts. The bar plugin draws it on the GPU in the theme's accent colour; the engine only streams it `{state, level}` |
 | `speak` | `true` | spoken questions and errors (actions themselves stay silent) |
 | `keep_history` | `true` | keep `~/.local/state/omarchy-voice/history.jsonl` |
-| `fast_stt_model` | `"base.en"` | the in-process Whisper model that makes simple commands instant; `""` turns it off |
+| `fast_stt_model` | `"base.en"` | Whisper model used when the ear is not running; `""` turns it off |
+| `ear` | `"auto"` | the Rust ear owns the microphone when it is running (`auto`, `on`, `off`). With it, commands are recognized in ~25 ms and the engine keeps about a gigabyte less in memory |
 | `autopilot_stage` | `2` | goals in the browser: `1` look only, `2` may fill in but asks before committing, `3` also acts alone on trusted sites |
 | `autopilot_trusted_sites` | `[]` | stage 3 only, e.g. `["github.com"]`. Money, deletions, account changes and signing in always ask, everywhere |
 | `autopilot_max_steps` | `14` | a goal gives up after this many steps (or four minutes) |
@@ -53,6 +54,7 @@ omarchy-voice yolo | yolo-on | yolo-off
 omarchy-voice jev-only                     toggle Jev-only mode
 omarchy-voice transcribe-silence [seconds] quick transcription timeout (no value: cycle 0.5/1/2/3/5)
 omarchy-voice goal "<text>"                work towards a goal in the browser
+omarchy-voice learn [--apply] [--forget]   mishearings your voice produces, from your history
 omarchy-voice misses [--hours N] [--replay] [--all]
 omarchy-voice key                          store the OpenRouter key
 omarchy-voice catalog [--json]             the built-in system actions
@@ -89,5 +91,8 @@ o.bind("SUPER + SHIFT + F9", "Voice: show hints", "omarchy-voice hints")
 | `~/.config/omarchy-voice/` | `config.json`, `env` (API key) |
 | `~/.local/share/omarchy-voice/` | Python environment and the Piper voice |
 | `~/.local/state/omarchy-voice/history.jsonl` | what was heard and done |
+| `~/.config/omarchy-voice/corrections.json` | mishearings you accepted with `learn` |
+| `~/.local/share/omarchy-voice/asr-models/` | the command recognizer |
+| `~/.local/share/omarchy-voice/bin/ear` | the ear |
 | `$XDG_RUNTIME_DIR/omarchy-voice/` | live state for the widget (`state.json`, `trace.json`), the control socket |
 | `~/.config/systemd/user/omarchy-voice.service` | the service |

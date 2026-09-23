@@ -12,6 +12,18 @@ mic ─► Silero VAD ─┬─► Whisper base.en (in process, ~0.2 s) ──�
 
 ## Hearing
 
+The microphone belongs to **the ear** (`ear/`, Rust): it captures, detects speech with
+Earshot, recognizes with Parakeet through sherpa-onnx, and publishes lines on a socket —
+levels for the orb, and each utterance with its text and a path to its audio. A command is
+transcribed in about 25 ms. The engine subscribes, so it holds no audio models at all; when
+the ear is not installed it falls back to capturing and recognizing for itself.
+
+Which recognizer the ear uses was decided by measurement, not reputation: fifty phrases
+recorded in a real voice, scored by *the action the brain takes*, in `tools/asr_bench.py`.
+Moonshine wins on synthetic speech and collapses on a person; Parakeet 110M beat the Whisper
+we shipped on both accuracy and speed.
+
+
 The microphone stays open; Silero cuts speech into utterances while earlier ones are
 still being handled, so nothing said in the meantime is lost. Each utterance goes to two
 recognizers at once: a small Whisper inside the service, and voxtype's large one. Simple

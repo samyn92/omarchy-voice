@@ -1,0 +1,15 @@
+[Unit]
+Description=Omarchy Voice ear (microphone, voice activity, fast recognizer)
+After=graphical-session.target pipewire.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/omarchy-voice/bin/ear
+Restart=on-failure
+RestartSec=2
+Nice=-5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=graphical-session.target

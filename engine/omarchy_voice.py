@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import ear as ear_client
 import livemic
 
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "omarchy-voice"
@@ -234,6 +235,20 @@ MISHEARD_WORDS = {
 }
 
 
+CORRECTIONS_PATH = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "omarchy-voice" / "corrections.json"
+_LEARNED: dict[str, str] | None = None
+
+
+def learned_corrections() -> dict[str, str]:
+    """What this user accepted from `omarchy-voice learn`, read once."""
+    global _LEARNED
+    if _LEARNED is None:
+        import learn
+
+        _LEARNED = learn.load(CORRECTIONS_PATH)
+    return _LEARNED
+
+
 def normalize(text: str) -> str:
     value = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
     for prefix in ("please ", "could you ", "can you ", "would you "):
@@ -244,7 +259,7 @@ def normalize(text: str) -> str:
     value = re.sub(r"\s+", " ", value).strip()
     for wrong, right in MISHEARD_WORDS.items():
         value = value.replace(wrong, right)
-    return MISHEARD.get(value, value)
+    return learned_corrections().get(value) or MISHEARD.get(value, value)
 
 
 def dynamic_match(text: str) -> Action | None:
@@ -301,6 +316,7 @@ DEFAULT_SETTINGS = {
     "keep_history": True,          # ~/.local/state/omarchy-voice/history.jsonl — what was heard and done, local only
     "default_agent": "",           # herdr agent kind for "new agent" ("" = the kind you run most)
     "fast_stt_model": "base.en",   # in-process Whisper for instant simple commands; "" to disable
+    "ear": "auto",                 # the Rust ear owns the microphone when it is running (auto | on | off)
     "orb": True,                   # the glowing orb in the theme's accent colour while listening
     "autopilot_stage": 2,          # 1 look only · 2 may fill in, asks before committing · 3 also acts alone on trusted sites
     "autopilot_trusted_sites": [],  # stage 3 only, e.g. ["github.com"] — money/deletions/logins always ask
@@ -488,6 +504,9 @@ class VoiceController:
         self.speaker = None
         self.brain = None
         self.fast_stt = None
+        # the Rust ear owns the microphone when it is running (settings: "ear": auto | off | on)
+        wanted = str(self.settings.get("ear", "auto")).lower()
+        self.use_ear = wanted == "on" or (wanted == "auto" and ear_client.available())
         self.partial: tuple[str, str, float] | None = None   # (accurate, quick, time) of an unfinished command
         self.tracer = Tracer()
         self.speaking = False                 # the user is in the middle of saying something
@@ -972,7 +991,9 @@ class VoiceController:
         import perceive
 
         try:
-            if self.settings.get("fast_stt_model"):
+            if self.settings.get("fast_stt_model") and not self.use_ear:
+                # with the ear running, the fast transcript comes from it: a second Whisper
+                # in this process would cost a gigabyte to duplicate work
                 self.fast_stt = livemic.FastWhisper(self.settings["fast_stt_model"])
             perceive.ocr_engine()
             import uinput
@@ -1077,7 +1098,7 @@ class VoiceController:
                         failures = 0
                     for audio in vad.utterances(lambda: self.running and LISTENING_PATH.exists(), on_speech=self.on_speech,
                                                 on_end=self.on_speech_end, on_level=self.on_level):
-                        utterances.put((audio, voxtype_state()))
+                        utterances.put((audio, voxtype_state(), None, None))
                 except Exception as exc:
                     failures += 1
                     if failures in (1, 5) or failures % 30 == 0:   # don't flood the journal while it is gone
@@ -1087,7 +1108,30 @@ class VoiceController:
                     livemic.reset_audio()          # the device list changed: read it again
                     time.sleep(min(5.0, 0.5 * failures))
 
-        threading.Thread(target=record, name="mic", daemon=True).start()
+        def listen_to_ear() -> None:
+            """The Rust ear owns the microphone: take its levels, speech marks and transcripts."""
+            client = ear_client.Ear()
+            while self.running:
+                for event in client.events(lambda: self.running and self.use_ear):
+                    kind = event.get("t")
+                    if kind == "level":
+                        self.on_level(float(event.get("v", 0.0)))
+                    elif kind == "speech":
+                        self.on_speech()
+                    elif kind == "idle":
+                        self.on_speech_end()
+                    elif kind == "utterance":
+                        self.on_speech_end()
+                        text = str(event.get("text", "")).strip()
+                        if text:
+                            utterances.put((None, voxtype_state(), text, event.get("wav")))
+                time.sleep(0.5)
+
+        if self.use_ear:
+            print("[omarchy-voice] listening through the ear (Rust)", flush=True)
+            threading.Thread(target=listen_to_ear, name="ear", daemon=True).start()
+        else:
+            threading.Thread(target=record, name="mic", daemon=True).start()
         while self.running:
             if not LISTENING_PATH.exists():
                 time.sleep(0.25)
@@ -1095,7 +1139,7 @@ class VoiceController:
             if self.state.snapshot().get("status") not in ("listening", "confirming"):
                 self.state.update(status="listening", listening=True, message="Listening")
             try:
-                audio, vox = utterances.get(timeout=0.3)
+                audio, vox, quick, wav = utterances.get(timeout=0.3)
             except queue_mod.Empty:
                 continue
             if self.brain is not None and self.brain.mode != "transcribe" and vox in ("recording", "transcribing"):
@@ -1105,14 +1149,14 @@ class VoiceController:
                 continue
             self.state.update(status="transcribing", message="Transcribing speech")
             try:
-                self.transcribe_and_handle(audio)
+                self.transcribe_and_handle(audio, quick=quick, wav=wav)
             except Exception as exc:
                 self.state.update(status="error", message=str(exc), last_ok=False)
                 self.notify(f"Voice command failed: {exc}")
             if self.state.snapshot().get("status") in ("transcribing", "deciding", "acting"):
                 self.state.update(status="listening" if LISTENING_PATH.exists() else "idle")
 
-    def transcribe_and_handle(self, audio) -> None:
+    def transcribe_and_handle(self, audio=None, quick: str | None = None, wav: str | None = None) -> None:
         """Two recognizers race: a small in-process Whisper and voxtype's large one.
 
         - small transcript is a simple command (fast path)  -> act on it now (~0.2 s)
@@ -1123,9 +1167,9 @@ class VoiceController:
 
         t0 = time.perf_counter()
         pool = ThreadPoolExecutor(2)
-        accurate = pool.submit(lambda: livemic.transcribe(livemic.save_wav(audio, RUNTIME_DIR / "utterance.wav")))
-        quick = None
-        if self.fast_stt is not None and self.brain is not None:
+        path = wav or str(livemic.save_wav(audio, RUNTIME_DIR / "utterance.wav"))
+        accurate = pool.submit(lambda: livemic.transcribe(path))
+        if quick is None and self.fast_stt is not None and self.brain is not None:
             try:
                 quick = self.fast_stt.transcribe(audio)
             except Exception as exc:
@@ -1376,6 +1420,61 @@ def print_response(response: dict[str, object], raw: bool) -> int:
     return 0 if response.get("ok") else 1
 
 
+def run_learn(args) -> int:
+    """Read the history, show what this voice keeps saying that the engine keeps missing."""
+    import learn
+    from brain import Brain
+
+    if args.forget:
+        CORRECTIONS_PATH.unlink(missing_ok=True)
+        print("Forgot every accepted correction.")
+        return 0
+
+    brain = Brain(ACTIONS, exact_match, normalize, {"hud": False, "speak": False, "jev_only": False})
+    brain.fuzzy_element = lambda hypotheses: None    # no screen to look at from the command line
+
+    def decides(text: str) -> bool:
+        decision = brain.fast_path(text, text) or brain.fuzzy_command([text], threshold=84)
+        return bool(decision is not None and decision.action is not None)
+
+    found = learn.proposals(HISTORY_PATH, brain.grammar(), normalize,
+                            hours=args.hours, min_count=args.min_count, decides=decides)
+    if not found:
+        print("Nothing to learn yet — say more, or lower --min-count.")
+        return 0
+
+    current = learn.load(CORRECTIONS_PATH)
+    print(f"{len(found)} mishearing{'s' if len(found) != 1 else ''} in what you said:\n")
+    for p in found:
+        mark = " (already corrected)" if current.get(p["heard"]) == p["means"] else ""
+        print(f"  “{p['heard']}”  →  “{p['means']}”   {p['times']}×, {p['score']:.0f}% alike{mark}")
+        for example in p["examples"][:2]:
+            print(f"        heard as: {example!r}")
+    if not args.apply:
+        print("\nAccept them with:  omarchy-voice learn --apply")
+        return 0
+
+    # Even a filtered proposal can be subtly wrong — "open to browsers" is really "open two
+    # browsers" — so each one is put to the user rather than written on their behalf.
+    accepted = 0
+    for p in found:
+        if sys.stdin.isatty():
+            answer = input(f"\n  “{p['heard']}” → “{p['means']}”?  [y/N/q] ").strip().lower()
+            if answer == "q":
+                break
+            if answer not in ("y", "yes"):
+                continue
+        current[p["heard"]] = p["means"]
+        accepted += 1
+    if not accepted:
+        print("\nNothing accepted.")
+        return 0
+    learn.save(CORRECTIONS_PATH, current)
+    print(f"\nAccepted {accepted}. {len(current)} corrections in {CORRECTIONS_PATH}")
+    print("They apply after:  systemctl --user restart omarchy-voice")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Local voice control for Omarchy")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1391,6 +1490,11 @@ def main() -> int:
     sub.add_parser("key", help="store your OpenRouter API key for Jev (~/.config/omarchy-voice/env)")
     silence_parser = sub.add_parser("transcribe-silence", help="seconds of silence that end a quick transcription")
     silence_parser.add_argument("seconds", nargs="?", type=float)
+    learn_parser = sub.add_parser("learn", help="mishearings this voice produces, found in the local history")
+    learn_parser.add_argument("--apply", action="store_true", help="accept them (writes corrections.json)")
+    learn_parser.add_argument("--hours", type=float, default=None)
+    learn_parser.add_argument("--min-count", type=int, default=2)
+    learn_parser.add_argument("--forget", action="store_true", help="throw away every accepted correction")
     misses_parser = sub.add_parser("misses", help="what was said but not done (from the local history)")
     misses_parser.add_argument("--hours", type=float, default=24.0)
     misses_parser.add_argument("--all", action="store_true", help="include longer ignored sentences (chatter)")
@@ -1449,6 +1553,8 @@ def main() -> int:
         operation = {"op": "action", "id": args.id}
     elif args.command in ("preview", "speak"):
         operation = {"op": args.command, "text": args.text}
+    elif args.command == "learn":
+        return run_learn(args)
     elif args.command == "goal":
         operation = {"op": "speak", "text": f"autopilot {args.text}"}
     elif args.command in ("hints", "clear", "dictation"):

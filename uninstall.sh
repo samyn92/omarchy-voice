@@ -12,6 +12,7 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-voice"
 UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/omarchy-voice.service"
 VOXTYPE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/voxtype/config.toml"
 
+systemctl --user disable --now omarchy-voice-ear.service 2>/dev/null || true
 systemctl --user disable --now omarchy-voice.service 2>/dev/null || true
 rm -f "$UNIT" "$HOME/.local/bin/omarchy-voice"
 systemctl --user daemon-reload
