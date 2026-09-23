@@ -96,7 +96,8 @@ class Orb:
         self.level = 0.0
         self.smooth = 0.0
         self.peak = 0.0
-        self.history = [0.0] * 72      # the last ~2 s, drawn around the rim
+        self.history = [0.0] * 72      # the last ~1.8 s at a steady 40 Hz, drawn around the rim
+        self.last_push = 0.0
         self.since = time.monotonic()
         self.ticking = False
         self.interval = 16
@@ -133,8 +134,6 @@ class Orb:
         self.level = max(0.0, min(1.0, float(msg.get("level", 0.0))))
         if self.level > self.smooth:
             self.smooth = self.level     # attack now; the tick only handles the fall
-        self.history.append(self.level)
-        del self.history[:-72]
         if self.state == "off":
             self.win.set_visible(False)
             self.ticking = False
@@ -151,9 +150,9 @@ class Orb:
 
     def wanted_interval(self) -> int:
         """60 fps while anything moves, 12 fps for quiet breathing — this runs all day."""
-        moving = (self.state in ("hearing", "thinking", "acting", "error")
-                  or max(self.level, self.smooth, self.peak) > 0.02)
-        return 16 if moving else 80
+        loud = max(self.level, self.smooth, self.peak, max(self.history[-24:], default=0.0))
+        moving = self.state in ("hearing", "thinking", "acting", "error") or loud > 0.02
+        return 16 if moving else 33   # 60 fps when anything moves, 30 fps for the quiet ring
 
     def tick(self) -> bool:
         if self.state == "off" or not self.win.get_visible():
@@ -162,6 +161,17 @@ class Orb:
         # fast attack, slow release: what every volume meter does, and why it reads as "instant"
         self.smooth += (self.level - self.smooth) * (0.7 if self.level > self.smooth else 0.12)
         self.peak = max(self.level, self.peak - 0.02)
+        # the ring moves on its own clock: messages arrive irregularly, time does not
+        now = time.monotonic()
+        if not self.last_push:
+            self.last_push = now
+        pushes = 0
+        while now - self.last_push >= 0.025 and pushes < 8:
+            self.history.append(self.smooth)
+            self.last_push += 0.025
+            pushes += 1
+        if pushes:
+            del self.history[:-72]
         if self.smooth < 0.004:
             self.smooth = 0.0
         self.area.queue_draw()

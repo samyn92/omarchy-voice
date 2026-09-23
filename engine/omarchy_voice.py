@@ -926,7 +926,7 @@ class VoiceController:
             return
         last, when = self._orb_sent
         now = time.monotonic()
-        if abs(level - last) < 0.02 and now - when < 0.25:
+        if abs(level - last) < 0.01 and now - when < 0.1:
             return                       # nothing changed worth drawing
         self._orb_sent = (level, now)
         if rest == "transcribe":
