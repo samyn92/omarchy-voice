@@ -21,6 +21,7 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "engine"))
 import argparse
 import json
+import os
 import statistics
 import time
 import wave
@@ -210,9 +211,16 @@ def sherpa(directory: _Path, threads: int = 2):
     elif (directory / "joiner.int8.onnx").exists():                      # NeMo Parakeet (transducer)
         hotwords = ROOT / "tools" / "hotwords.txt"
         extra = {}
-        if hotwords.exists():          # bias towards our own command words ("claude", "paste")
+        if hotwords.exists():          # bias towards our own words ("claude", "spotify", "herdr")
+            # sherpa wants a sentencepiece vocab to turn hotwords into tokens; these models ship
+            # only tokens.txt, so it is written from that, rank standing in for the log-probability
+            vocab = directory / "bpe.vocab"
+            if not vocab.exists():
+                rows = [l.rsplit(" ", 1) for l in (directory / "tokens.txt").read_text().splitlines()]
+                vocab.write_text("\n".join(f"{t}\t{-int(i) * 0.01:.2f}" for t, i in rows if i.isdigit()) + "\n")
             extra = {"decoding_method": "modified_beam_search", "hotwords_file": str(hotwords),
-                     "hotwords_score": 2.0, "modeling_unit": "bpe"}
+                     "hotwords_score": float(os.environ.get("HOTWORD_SCORE", "2.0")),
+                     "modeling_unit": "bpe", "bpe_vocab": str(vocab)}
         recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=str(directory / "encoder.int8.onnx"),
             decoder=str(directory / "decoder.int8.onnx"),
