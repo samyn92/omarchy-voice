@@ -59,9 +59,10 @@ SNAPSHOT_JS = """
       x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2),
       w: Math.round(r.width), h: Math.round(r.height),
       below_fold: r.top > vh,
+      in_dialog: !!e.closest('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'),
       is_input: ['INPUT','TEXTAREA'].includes(e.tagName) || e.isContentEditable,
       tag: e.tagName });
-    if (out.length >= 100) break;
+    if (out.length >= 160) break;
   }
   return { elements: out, url: location.href, title: document.title.slice(0,120), vh, vw,
            dpr: devicePixelRatio };

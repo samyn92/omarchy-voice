@@ -33,7 +33,7 @@ TRUSTED = 3
 
 MAX_STEPS = 14
 MAX_SECONDS = 240.0
-MAX_ELEMENTS = 60          # per step; keeps a request small enough to stay fast
+MAX_ELEMENTS = 80          # per step; keeps a request small enough to stay fast
 SETTLE_S = 0.9             # after a click or Enter: let the next page draw before looking
 
 # steps that only move the eyes, never change anything on a page
@@ -54,7 +54,8 @@ REASONS = {
     "sends_or_posts": "this sends or posts something",
     "spends_money": "this spends money or places an order",
     "deletes_data": "this deletes or removes something",
-    "changes_settings": "this changes account settings",
+    "changes_preference": "this changes a preference you can switch back",
+    "changes_settings": "this changes account or security settings",
     "signs_in_or_out": "this signs in or out",
     "off_goal": "this does not serve the goal",
     "unclear": "it is not clear what this does",
@@ -144,6 +145,7 @@ class Autopilot:
         self.max_seconds = max_seconds
         self.window_title = window_title
         self._typed_into_search = False   # Enter in a search box submits a search, not a commitment
+        self._seen: set[str] = set()          # what was on screen last step, to find what is new
 
     # -- the loop ------------------------------------------------------------
     def run(self, goal: str) -> Run:
@@ -211,6 +213,10 @@ class Autopilot:
                 step.verdict, step.reason = "safe", "nothing_committed"   # submitting a search
             elif step.kind in COMMITTING_KINDS:
                 verdict, reason, cost = self._judge(goal, snapshot, step, choice)
+                if verdict == "safe" and reason in NEVER_ALONE:
+                    # "safe, because it changes settings" is a contradiction; the stricter half wins.
+                    # Seen in Hermes: clicking "Dark" came back safe/changes_settings and went through.
+                    verdict = "ask"
                 run.cost += cost
                 step.verdict, step.reason, step.cost = verdict, reason, step.cost + cost
                 if verdict == "refuse":
@@ -284,20 +290,44 @@ class Autopilot:
         result = self.browser.execute({"type": "page_text"}, self.window_title)
         return sentences(result.get("text", "") if isinstance(result, dict) else "")
 
-    def _state(self, goal: str, snapshot: dict, run: Run, lines: list[str] | None = None) -> dict:
+    def _state(self, goal: str, snapshot: dict, run: Run, lines: list[str] | None = None,
+               elements: list[dict] | None = None) -> dict:
         host = jev.host_of(snapshot.get("url", ""))
-        elements = (snapshot.get("elements") or [])[:MAX_ELEMENTS]
+        elements = elements if elements is not None else (snapshot.get("elements") or [])[:MAX_ELEMENTS]
         return {
             "page_text": [f"t{i:02d} {line}" for i, line in enumerate(lines or [])],
             "goal": goal,
             "page": {"url": str(snapshot.get("url", ""))[:200], "title": str(snapshot.get("title", ""))[:120]},
-            "elements": [jev.encode_element(e, host) for e in elements],
+            "elements": [("(in dialog) " if e.get("in_dialog") else "(new) " if e.get("new") else "") + jev.encode_element(e, host) for e in elements],
             "steps_so_far": [{"did": s.label, "outcome": s.outcome, "worked": s.ok} for s in run.steps[-6:]],
             "steps_left": self.max_steps - len(run.steps),
         }
 
+    def _prioritise(self, snapshot: dict) -> list[dict]:
+        """What just appeared goes first.
+
+        An app shows most of the same things after every click — a sidebar, a toolbar — and
+        what the click opened (a settings pane, a dialog, a menu) lands at the end of the
+        list, past what a request can carry. Clicking "Open settings" in Hermes put
+        "Appearance" at position 81 of 100, behind the whole session list.
+        """
+        key = lambda e: f"{e.get('role')}|{e.get('text')}"   # noqa: E731
+        elements, seen_here = [], set()
+        for e in snapshot.get("elements") or []:
+            if key(e) in seen_here:
+                continue          # a list repeats itself ("Session actions" on every row)
+            seen_here.add(key(e))
+            elements.append(e)
+        new = lambda e: bool(self._seen) and key(e) not in self._seen   # noqa: E731
+        for e in elements:
+            e["new"] = new(e)
+        self._seen = seen_here
+        # an open dialog is where the user's attention is; then whatever just appeared
+        rank = lambda e: (not e.get("in_dialog"), not e["new"])   # noqa: E731
+        return sorted(elements, key=rank)[:MAX_ELEMENTS]
+
     def _next_step(self, goal: str, snapshot: dict, run: Run) -> dict:
-        elements = (snapshot.get("elements") or [])[:MAX_ELEMENTS]
+        elements = self._prioritise(snapshot)
         lines = self._page_lines()
         ids = {e["id"]: e for e in elements}
         kinds = {
@@ -319,7 +349,9 @@ class Autopilot:
         questions = {
             "step": {"type": "choice",
                      "instructions": {"question": "What is the single next step towards `goal` on this page?",
-                                      "focus": ("Judge only from `elements` (what can be acted on) and `page_text` (what "
+                                      "focus": ("Elements marked (new) appeared after the last step — usually what that "
+                                                "step opened, and usually where to look next. "
+                                                "Judge only from `elements` (what can be acted on) and `page_text` (what "
                                                 "is written). Prefer the smallest step that makes progress. To look "
                                                 "something up on the web, choose search_web: it opens a results page "
                                                 "directly and is more reliable than typing into whatever box this page "
@@ -345,7 +377,7 @@ class Autopilot:
                                                 "nothing is typed.")},
                      "criteria": {t: t for t in texts} | {"none": "nothing to type"}},
         }
-        result = jev.decide(self._state(goal, snapshot, run, lines), questions)
+        result = jev.decide(self._state(goal, snapshot, run, lines, elements), questions)
         answers = result["answers"]
         cost = jev.cost_usd(result.get("usage", {}))
 
@@ -426,8 +458,10 @@ class Autopilot:
                                                    "else: reading, scrolling, following links, and searching or filtering — "
                                                    "including typing a query and submitting it, which only fetches results. "
                                                    "Ask when it commits something a person would want to see first: sending a "
-                                                   "message, posting, buying, booking, changing an account. Refuse when it is "
-                                                   "irreversible or clearly not what `goal` asked for.")},
+                                                   "message, posting, buying, booking, changing an account. Changing a setting "
+                                                   "is also a commitment when `goal` only asked to find or show it — finding "
+                                                   "where dark mode is is not switching it on. Refuse when it is irreversible "
+                                                   "or clearly not what `goal` asked for.")},
                         "criteria": {"safe": "Nothing is committed: go ahead",
                                      "ask": "It commits something: put it to the user first",
                                      "refuse": "Irreversible, or not what the goal asked for: do not do it"}},

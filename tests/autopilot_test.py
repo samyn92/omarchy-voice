@@ -222,7 +222,16 @@ def main() -> int:
         check("stage 3 still asks when money is involved", bool(asked) and run.status == "declined",
               f"asked={asked} status={run.status}")
 
-        # 9. an untrusted host gets no stage 3 treatment
+        # 9. a judge that says "safe" but gives a reason that must never pass alone is asked
+        go_home()
+        autopilot.jev.decide = scripted(
+            [lambda s: {"step": "click_button", "element": element_named(s, "Delete account"), "text": "none", "answer": "none"}],
+            judge=("safe", "changes_settings"))
+        asked = []
+        run = pilot(stage=autopilot.FILL_IN, ask=lambda label, reason: (asked.append(label), False)[1]).run("find it")
+        check("safe-but-changes-settings is treated as ask", bool(asked), f"asked={asked}")
+
+        # 10. an untrusted host gets no stage 3 treatment
         go_home()
         autopilot.jev.decide = scripted(
             [lambda s: {"step": "click_button", "element": element_named(s, "Delete account"), "text": "none", "answer": "none"}],
@@ -242,7 +251,7 @@ def main() -> int:
         proc.terminate()
         server.shutdown()
 
-    total = 10
+    total = 11
     print(f"\n{total - failures}/{total} passed")
     return 1 if failures else 0
 
