@@ -60,6 +60,12 @@ SNAPSHOT_JS = """
       w: Math.round(r.width), h: Math.round(r.height),
       below_fold: r.top > vh,
       in_dialog: !!e.closest('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'),
+      // the app's own word that this is navigation: a nav landmark, a tab list, a menu bar
+      in_nav: !!e.closest('nav,[role="navigation"],[role="tablist"],[role="menubar"],[role="tree"]') || ['tab', 'menuitem', 'treeitem'].includes(e.getAttribute('role') || ''),
+      // a switch, a checkbox or a selected option changes something when clicked; the map explorer
+      // must be able to tell them from navigation
+      state: e.getAttribute('aria-pressed') ?? e.getAttribute('aria-checked') ?? e.getAttribute('aria-selected')
+             ?? ((e.type === 'checkbox' || e.type === 'radio') ? String(e.checked) : ''),
       is_input: ['INPUT','TEXTAREA'].includes(e.tagName) || e.isContentEditable,
       tag: e.tagName });
     if (out.length >= 160) break;
@@ -351,6 +357,12 @@ class Executor:
                     self._page = pages[(idx + 1) % len(pages)]
                 self._page.bring_to_front()
                 return {"ok": True, "outcome": f"switched to {self._page.url}"}
+
+            if t == "press_key":
+                # one named key ("Escape", "Tab", "ArrowDown") — how the map explorer backs out of a screen
+                page.keyboard.press(str(action.get("key", "Escape")))
+                page.wait_for_timeout(250)
+                return {"ok": True, "outcome": f"pressed {action.get('key', 'Escape')}"}
 
             if t == "page_text":
                 # what a reader sees, for answering a goal from the page itself

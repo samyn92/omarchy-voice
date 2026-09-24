@@ -1,0 +1,74 @@
+[
+ {
+  "id": "hermes.go-to-settings-and-find-where-to-enable",
+  "app": "hermes",
+  "phrases": [
+   "go to settings and find where to enable dark mode"
+  ],
+  "steps": [
+   {
+    "kind": "click_button",
+    "role": "button",
+    "text": "Open settings",
+    "placeholder": ""
+   },
+   {
+    "kind": "click_button",
+    "role": "button",
+    "text": "Appearance",
+    "placeholder": ""
+   }
+  ],
+  "answer": "Dark \u2014 Hermes",
+  "source": "shipped",
+  "uses": 0,
+  "ok": 0,
+  "created": 1790265473
+ },
+ {
+  "id": "hermes.go-to-settings-and-find-the-archived-cha",
+  "app": "hermes",
+  "phrases": [
+   "go to settings and find the archived chats"
+  ],
+  "steps": [
+   {
+    "kind": "click_button",
+    "role": "button",
+    "text": "Open settings",
+    "placeholder": ""
+   }
+  ],
+  "answer": "Archived Chats",
+  "source": "shipped",
+  "uses": 0,
+  "ok": 0,
+  "created": 1790265645
+ },
+ {
+  "id": "hermes.go-to-settings-and-find-the-version-of-h",
+  "app": "hermes",
+  "phrases": [
+   "go to settings and find the version of hermes in about"
+  ],
+  "steps": [
+   {
+    "kind": "click_button",
+    "role": "button",
+    "text": "Open settings",
+    "placeholder": ""
+   },
+   {
+    "kind": "click_button",
+    "role": "button",
+    "text": "About",
+    "placeholder": ""
+   }
+  ],
+  "answer": "Version 0.21.3",
+  "source": "shipped",
+  "uses": 0,
+  "ok": 0,
+  "created": 1790265650
+ }
+]

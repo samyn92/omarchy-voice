@@ -57,6 +57,7 @@ Just say what you want. A few examples:
 | "new claude", "next agent", "who needs me" | starts and moves between herdr agents |
 | "tell the agentops agent to run the tests" | sends a prompt to an agent without switching to it |
 | "figure out when the Christmas market opens" | works towards a goal in the browser, step by step |
+| "in hermes, go to settings and find dark mode" | works towards a goal inside an app — and remembers how |
 
 The full list is in [docs/commands.md](docs/commands.md).
 
@@ -81,28 +82,48 @@ omarchy-voice key                 # store your OpenRouter key
 omarchy-voice --help
 ```
 
-## Goals in the browser
+## Goals — in your apps and on the web
 
-Instead of one command you can give a goal, and it works towards it: look at the page, take
-the next step, look again. Say "figure out …", "find out …", "research …" or "autopilot …".
+Instead of one command you can give a goal, and it works towards it: look at the screen,
+take the next step, look again. It works in the browser and inside apps.
 
 ```
-"figure out when the Bremen Christmas market opens"
-  1. Search the web for "when the Bremen Christmas market opens"
-  2. Done — "The Christmas market in Bremen will be open from 23 November to 23 December"
+"in hermes, go to settings and find where to enable dark mode"
+  1. Click "Open settings"     SKILL
+  2. Click "Appearance"        SKILL
+  3. Done — "Dark"             replayed from a skill: no model, no cost, 3 s
 ```
 
-Every step is chosen from what is actually on the page, the panel shows each one as it
-happens, and saying "stop" ends it at once. Answers are quoted from the page, never
-invented: if it cannot find one it says so rather than guess.
+In an app that voice control can operate, plain phrases are goals already: "go to settings
+and find the archived chats", "open appearance". Anywhere, "figure out …", "find out …",
+"research …" and "autopilot …" start one; "in hermes …" and "in this app …" say where.
 
-Before anything that commits — sending, posting, buying, booking, changing an account — two
-independent checks run: a word list in code, and a second Jev call that sees the page and
+**It gets faster the more it is used.** Each goal is worked the cheapest way that is known
+to work:
+
+1. **a skill** — this was done here before: the clicks are replayed, no model at all
+2. **the app map** — "go to appearance": the map knows the way, no model at all
+3. **Jev** — works it out one chosen step at a time; if it succeeds, it becomes a skill
+
+A few skills ship with the plugin; the rest are learned on your machine. The map of each
+app is learned from use: every click records where it led. `omarchy-voice skills` and
+`omarchy-voice map hermes` show what is known.
+
+**Which apps.** Electron apps — Hermes, Obsidian, Signal, Spotify, Typora, ChatGPT, VS Code —
+are web pages inside, and started with a local debug port they can be read and operated
+exactly. Say "give voice access to obsidian" once; from then on it starts that way. Password
+managers never get it. `omarchy-voice surface` lists what can be reached.
+
+A card in the top-right corner shows each step as it happens, and who chose it — **SKILL**,
+**MAP** or **JEV**. Saying "stop" ends it at once. Answers are quoted from the screen, never
+invented.
+
+Before anything that commits — sending, posting, buying, booking, changing a setting — two
+independent checks run: a word list in code, and a second Jev call that sees the screen and
 judges what the step would do. Either one is enough to stop and ask you, and anything that
-fails counts as "ask". Fields that hold a password or a card number are never typed into,
-and never reach Jev at all. By default it may fill things in but stops at the commit and
-asks you; `autopilot_stage` in the config changes that — see
-[docs/configuration.md](docs/configuration.md).
+fails counts as "ask". Finding where something is never switches it; fields that hold a
+password or a card number are never typed into, and never reach Jev at all. See
+[docs/configuration.md](docs/configuration.md) for the stages.
 
 ## Requirements
 
@@ -140,7 +161,7 @@ to OpenRouter. A history of what was heard is kept locally in
 omarchy plugin remove io.github.samyn92.omarchy-voice
 ```
 
-Settings and history stay unless you pass `--purge` to `uninstall.sh`.
+Settings, history, learned skills and app maps stay unless you pass `--purge` to `uninstall.sh`.
 
 ## License
 

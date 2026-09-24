@@ -100,6 +100,12 @@ class OrbStream:
         self.path.unlink(missing_ok=True)
 
 
+def apps_matches(app, window) -> bool:
+    import apps
+
+    return apps.window_matches(app, window.cls, window.title)
+
+
 def voxtype_state() -> str:
     try:
         return VOXTYPE_STATE.read_text().strip()
@@ -318,6 +324,7 @@ DEFAULT_SETTINGS = {
     "fast_stt_model": "base.en",   # in-process Whisper for instant simple commands; "" to disable
     "ear": "auto",                 # the Rust ear owns the microphone when it is running (auto | on | off)
     "orb": True,                   # the glowing orb in the theme's accent colour while listening
+    "surface_apps": [],            # apps started with a local debug port so goals can operate them
     "autopilot_stage": 2,          # 1 look only · 2 may fill in, asks before committing · 3 also acts alone on trusted sites
     "autopilot_trusted_sites": [],  # stage 3 only, e.g. ["github.com"] — money/deletions/logins always ask
     "autopilot_max_steps": 14,     # a goal gives up after this many steps
@@ -557,6 +564,60 @@ class VoiceController:
             pending_label="",
         )
 
+    def publish_reach(self) -> None:
+        """What the panel shows about goals: skills known, apps with voice access."""
+        try:
+            import skills
+
+            count = len(skills.Library().skills)
+        except Exception:
+            count = 0
+        self.state.update(skills_count=count, surface_apps=list(self.settings.get("surface_apps") or []))
+
+    def set_surface(self, name: str, enabled: bool) -> list[str]:
+        """Remember (or forget) that an app should start with voice access."""
+        wanted = [str(a) for a in self.settings.get("surface_apps") or []]
+        key = name.lower().removesuffix(".desktop")
+        wanted = [a for a in wanted if a.lower() != key] + ([key] if enabled else [])
+        self.settings["surface_apps"] = wanted
+        stored = load_settings()
+        stored["surface_apps"] = wanted
+        save_settings(stored)
+        self.publish_reach()
+        return wanted
+
+    def give_voice_access(self, app) -> dict[str, object]:
+        """"give voice access to hermes": start it with a debug port from now on — now too, if it is open."""
+        import desktop
+        import surface
+        from brain import Action as BrainAction
+
+        if surface.refused(app):
+            message = f"{app.name} holds your passwords — it never gets voice access"
+            self.brain.hud(message, tone="warn", ms=5000)
+            self.say(message)
+            return self.state.update(message=message, last_ok=False)
+        entry = surface.electron_entry(app)
+        if not surface.is_electron(entry):
+            message = f"{app.name} is not an Electron app — it will be reachable through accessibility later"
+            self.brain.hud(message, tone="warn", ms=5000)
+            self.say(f"I can't operate {app.name} that way yet.")
+            return self.state.update(message=message, last_ok=False)
+        self.set_surface(entry.id, True)
+        running = [w for w in desktop.snapshot().windows if apps_matches(app, w)]
+        if running and all(surface.debug_port(w.pid) for w in running):
+            message = f"{app.name} already has voice access"
+        elif running:
+            restart = BrainAction("restart_app", f"Restart {app.name} with voice access", {"app": entry},
+                                  confirm=True, repeatable=False)
+            self.brain.hud(f"Restart {app.name} with voice access?", "say confirm or cancel", tone="warn", ms=15000)
+            return self.set_pending(restart, 1.0, "surface")
+        else:
+            desktop.exec_detached(self.brain.launch_argv(entry))
+            message = f"Opening {app.name} with voice access"
+        self.brain.hud(message, tone="ok", ms=4000)
+        return self.state.update(message=message, last_ok=True, last_action_label=message)
+
     def set_jev_only(self, enabled: bool) -> dict[str, object]:
         self.settings["jev_only"] = enabled
         stored = load_settings()
@@ -752,6 +813,8 @@ class VoiceController:
                                      source=decision.source, latency_ms=decision.ms.get("total", 0))
         if action.kind == "autopilot":
             return self.start_autopilot(action, decision)
+        if action.kind == "surface":
+            return self.give_voice_access(action.args["app"])
         if action.kind == "confirm":
             with self.lock:
                 pending = self.pending
@@ -773,72 +836,123 @@ class VoiceController:
         return {**state, "_exec_ms": exec_ms}
 
     # -- working towards a goal in the browser --------------------------------
+    def goal_target(self, app_hint: str = ""):
+        """Where a goal runs: (harness.Target, None) — or (None, why not).
+
+        "in hermes …" names the app; "in this app …" means the focused window; with neither, a
+        focused app that can be operated is where you are working, and anything else is the web.
+        """
+        import browsers
+        import desktop
+        import harness
+        import surface
+
+        desk = desktop.snapshot()
+        hint = app_hint.strip().lower()
+        if hint and hint not in ("this", "this app", "here"):
+            window = next((w for w in desk.windows if hint in w.cls.lower() or hint in w.title.lower()), None)
+            if window is None:
+                return None, f"{app_hint.title()} is not open"
+        else:
+            window = desk.focused
+        name = window.cls if window else ""
+        if window is not None and not browsers.is_chromium(window.cls):
+            found = surface.for_window(window)
+            if found:
+                bridge, key = found
+                return harness.Target(bridge=bridge, app=key, title=name, window_title=None), None
+            if hint:
+                return None, f"I can't operate {name} yet — say “give voice access to {name.lower()}”"
+        if not self.brain.browser.available():
+            return None, "Open a browser with remote debugging first (see the README)"
+        return harness.Target(bridge=self.brain.browser, app=None, title="the browser"), None
+
     def start_autopilot(self, action, decision) -> dict[str, object]:
         import autopilot as autopilot_mod
+        import harness as harness_mod
 
         if self.autopilot:
             self.brain.hud("Already working on a goal — say stop", tone="warn", ms=2500)
             return self.state.update(message="A goal is already running")
-        if not self.brain.browser.available():
-            message = "Open a browser with remote debugging first (see the README)"
-            self.brain.hud(message, tone="warn", ms=4000)
-            self.say("I need a browser I can read.")
-            return self.state.update(status="listening" if LISTENING_PATH.exists() else "idle", message=message, last_ok=False)
 
         goal = str(action.args.get("goal", "")).strip()
+        target, why_not = self.goal_target(str(action.args.get("app", "")))
+        if target is None:
+            self.brain.hud(why_not, tone="warn", ms=5000)
+            self.say(why_not)
+            return self.state.update(status="listening" if LISTENING_PATH.exists() else "idle", message=why_not, last_ok=False)
+
         stage = int(self.settings.get("autopilot_stage", 2))
         trusted = tuple(self.settings.get("autopilot_trusted_sites") or ())
         self.autopilot_stop.clear()
+        if not hasattr(self, "harness"):
+            self.harness = harness_mod.Harness()
+        steps: list[dict] = []
 
         def ask(label: str, reason: str) -> bool:
             """Put a committing step to the user and wait for an answer (no answer = no)."""
             reply = threading.Event()
             self.autopilot_reply, self.autopilot_said_yes = reply, False
-            self.state.update(status="confirming", pending_label=label,
+            self.state.update(status="confirming", pending_label=label, goal_status="asking",
                               message=f"Confirm: {label}" + (f" — {reason}" if reason else ""))
             self.brain.hud(f"Confirm: {label}?", reason or "say confirm or stop", tone="warn", ms=60000)
             self.say(f"{reason}. Confirm {label}, or say stop." if reason else f"Confirm {label}, or say stop.")
             answered = reply.wait(90)
             self.autopilot_reply = None
-            self.state.update(status="acting", pending_label="")
+            self.state.update(status="acting", pending_label="", goal_status="working")
             return bool(answered and self.autopilot_said_yes)
 
         def on_step(step, run) -> None:
-            self.state.update(status="acting", message=f"{run.goal[:40]} · {step.n}. {step.label}",
-                              autopilot_step=step.n, autopilot_goal=run.goal[:80], autopilot_label=step.label)
-            self.brain.hud(f"Goal: {run.goal[:50]}", f"{step.n}. {step.label}", ms=6000)
-            self.tracer.record({"heard": f"(step {step.n})", "route": "autopilot", "detail": step.kind,
+            row = {"n": step.n, "label": step.label, "ok": step.ok, "source": step.source,
+                   "asked": step.asked, "kind": step.kind}
+            if steps and steps[-1]["n"] == step.n:
+                steps[-1] = row                  # the same step, now answered
+            else:
+                steps.append(row)
+            self.state.update(status="acting", message=f"{goal[:40]} · {step.n}. {step.label}",
+                              autopilot_step=step.n, autopilot_goal=goal[:80], autopilot_label=step.label,
+                              goal_steps=steps[-12:])
+            self.brain.hud(f"Goal: {goal[:50]}", f"{step.n}. {step.label}", ms=6000)
+            self.tracer.record({"heard": f"(step {step.n})", "route": "autopilot", "detail": f"{step.source} · {step.kind}",
                                 "action": step.label, "ok": step.ok,
                                 "message": step.outcome or (autopilot_mod.REASONS.get(step.reason, "") if step.asked else ""),
                                 "ms": {"e2e": step.ms} if step.ms else {}, "cost": round(step.cost, 6)})
 
-        pilot = autopilot_mod.Autopilot(
-            self.brain.browser, stage=stage, trusted_hosts=trusted, ask=ask, on_step=on_step,
-            stop=self.autopilot_stop.is_set, max_steps=int(self.settings.get("autopilot_max_steps", 14)))
-
         def work() -> None:
             try:
-                run = pilot.run(goal)
+                outcome = self.harness.work(goal, target, stage=stage, ask=ask, on_step=on_step,
+                                            stop=self.autopilot_stop.is_set, trusted=trusted,
+                                            max_steps=int(self.settings.get("autopilot_max_steps", 14)))
+                run = outcome.run
             except Exception as exc:
-                print(f"[omarchy-voice] autopilot: {exc}", file=sys.stderr, flush=True)
-                run = autopilot_mod.Run(goal=goal, status="error", answer=str(exc)[:120])
+                print(f"[omarchy-voice] goal: {exc}", file=sys.stderr, flush=True)
+                outcome, run = None, autopilot_mod.Run(goal=goal, status="error", answer=str(exc)[:120])
             self.autopilot = None
+            used = outcome.used if outcome else "jev"
+            learned = bool(outcome and outcome.learned)
             spoken = run.answer if run.status == "done" and run.answer else run.summary
-            self.brain.hud(f"{run.summary}: {run.goal[:40]}", run.answer[:90], tone="ok" if run.status == "done" else "warn", ms=8000)
+            sub = run.answer[:90] or ("Learned — next time this is instant" if learned else "")
+            self.brain.hud(f"{run.summary}: {goal[:40]}", sub, tone="ok" if run.status == "done" else "warn", ms=8000)
             self.say(spoken[:300])
-            self.tracer.record({"heard": goal, "route": "autopilot", "detail": run.status,
-                                "action": run.summary, "ok": run.status == "done",
+            self.tracer.record({"heard": goal, "route": "autopilot", "detail": f"{run.status} · {used}",
+                                "action": run.summary + (" · learned" if learned else ""), "ok": run.status == "done",
                                 "message": run.answer[:160], "ms": {}, "cost": round(run.cost, 6)})
             self.state.update(status="listening" if LISTENING_PATH.exists() else "idle",
                               message=f"{run.summary} — {run.answer[:80]}" if run.answer else run.summary,
                               autopilot_step=0, autopilot_goal="", autopilot_label="",
+                              goal_status=run.status, goal_answer=run.answer[:200], goal_used=used,
+                              goal_learned=learned, goal_cost=round(run.cost, 5), goal_finished=time.time(),
+                              skills_count=len(self.harness.library.skills),
                               last_action_label=f"Goal: {goal[:40]}", last_ok=run.status == "done")
 
         self.autopilot = goal
-        threading.Thread(target=work, name="autopilot", daemon=True).start()
-        self.brain.hud(f"Goal: {goal[:50]}", "working — say stop to end it", ms=6000)
-        return self.state.update(status="acting", message=f"Working on: {goal[:60]}",
-                                 autopilot_goal=goal[:80], last_action_label=f"Goal: {goal[:40]}")
+        threading.Thread(target=work, name="goal", daemon=True).start()
+        where = target.title or "the browser"
+        self.brain.hud(f"Goal in {where}: {goal[:40]}", "working — say stop to end it", ms=6000)
+        return self.state.update(status="acting", message=f"Working on: {goal[:60]}", autopilot_goal=goal[:80],
+                                 goal_title=goal[:80], goal_where=where, goal_status="working", goal_steps=[],
+                                 goal_answer="", goal_used="", goal_learned=False, goal_finished=0,
+                                 last_action_label=f"Goal: {goal[:40]}")
 
     def autopilot_heard(self, spoken: str) -> dict[str, object] | None:
         """While a goal runs, only stopping and answering a confirmation mean anything."""
@@ -884,6 +998,17 @@ class VoiceController:
             value = request.get("seconds")
             nxt = float(value) if value is not None else next((s for s in steps if s > current), steps[0])
             return {"ok": True, "state": self.set_transcribe_silence(nxt)}
+        if operation == "goal":
+            from brain import Action as BrainAction
+
+            text = str(request.get("text", "")).strip()
+            action = BrainAction("autopilot", f"Goal: {text[:50]}", {"goal": text, "app": str(request.get("app") or "")},
+                                 repeatable=False)
+            return {"ok": True, "state": self.start_autopilot(action, None)}
+        if operation == "surface":
+            name = str(request.get("app", "")).strip()
+            wanted = self.set_surface(name, bool(request.get("enabled", True))) if name else list(self.settings.get("surface_apps") or [])
+            return {"ok": True, "state": {**self.state.snapshot(), "surface_apps": wanted}}
         if operation == "jev_only":
             mode = str(request.get("mode", "toggle"))
             enabled = (not self.settings.get("jev_only")) if mode == "toggle" else mode == "on"
@@ -1278,6 +1403,7 @@ def run_daemon() -> int:
     try:
         controller.orb_stream.start()
         controller.load_models()
+        controller.publish_reach()
         controller.orb(controller.orb_rest())    # listening was on before a restart
         controller.run_audio()
     finally:
@@ -1420,6 +1546,87 @@ def print_response(response: dict[str, object], raw: bool) -> int:
     return 0 if response.get("ok") else 1
 
 
+def run_surface(args) -> int:
+    """Which open windows can be operated, and which apps start with voice access."""
+    import apps
+    import desktop
+    import surface
+
+    if args.verb in ("add", "remove"):
+        if not args.app:
+            print("Which app?  omarchy-voice surface add hermes")
+            return 2
+        if args.verb == "add" and surface.NEVER.search(args.app):
+            print(f"{args.app} holds passwords — it never gets voice access.")
+            return 1
+        response = request({"op": "surface", "app": args.app, "enabled": args.verb == "add"})
+        wanted = (response.get("state") or {}).get("surface_apps", [])
+        print(f"{'Added' if args.verb == 'add' else 'Removed'}. Apps with voice access: {', '.join(wanted) or 'none'}")
+        if args.verb == "add":
+            print(f"Restart {args.app} for it to take effect (or say “give voice access to {args.app}”).")
+        return 0
+
+    print("Open windows:")
+    for w in desktop.snapshot().windows:
+        kind = surface.kind_of(w)
+        mark = {"app": "operable (debug port)", "browser": "browser (goals on the web)",
+                "closed": "not operable yet"}[kind]
+        print(f"  {w.cls:24} {mark}")
+    wanted = load_settings().get("surface_apps") or []
+    print(f"\nStart with voice access: {', '.join(wanted) or 'none — omarchy-voice surface add <app>'}")
+    import browsers
+
+    electron = sorted({a.name for a in apps.installed() if surface.is_electron(a) and not surface.refused(a)
+                       and not browsers.is_chromium(a.wm_class or a.name) and "browser" not in a.name.lower()})
+    print(f"Could have it (Electron): {', '.join(electron)}")
+    never = sorted({a.name for a in apps.installed() if surface.refused(a)})
+    if never:
+        print(f"Never (holds passwords): {', '.join(never)}")
+    return 0
+
+
+def run_skills(args) -> int:
+    import skills
+
+    library = skills.Library()
+    if args.forget:
+        print("Forgotten." if library.forget(args.forget) else f"No skill {args.forget!r}.")
+        return 0
+    rows = [s for s in library.skills.values() if not args.app or s.app == args.app]
+    if not rows:
+        print("No skills yet — a goal that works in an app is kept as one.")
+        return 0
+    for s in sorted(rows, key=lambda s: (s.app, s.title)):
+        rate = f"{s.ok}/{s.uses} ok" if s.uses else "not used yet"
+        print(f"  {s.app:10} {s.title[:52]:52} {len(s.steps)} steps  {rate:12} {s.source}  [{s.id}]")
+    return 0
+
+
+def run_map(args) -> int:
+    import appmap
+    import desktop
+    import surface
+
+    key = surface.app_key(args.app)
+    amap = appmap.AppMap(key)
+    print(f"{args.app}: {amap.summary()}")
+    if not (args.explore or args.go):
+        for edge in amap.edges[:40]:
+            reveals = ", ".join(edge.get("reveals", [])[:5])
+            print(f"  “{edge['text']}” → {reveals}")
+        return 0
+    window = next((w for w in desktop.snapshot().windows if args.app.lower() in w.cls.lower()), None)
+    reach = surface.for_window(window)
+    if not reach:
+        print(f"{args.app} is not open with voice access.")
+        return 1
+    if args.go:
+        print("Exploring — this clicks. Only do this in a disposable instance of the app.")
+    amap = appmap.explore(reach[0], key, limit=args.limit, dry_run=not args.go)
+    print(f"{args.app}: {amap.summary()}")
+    return 0
+
+
 def run_learn(args) -> int:
     """Read the history, show what this voice keeps saying that the engine keeps missing."""
     import learn
@@ -1509,8 +1716,20 @@ def main() -> int:
     preview_parser.add_argument("text")
     speak_parser = sub.add_parser("speak")
     speak_parser.add_argument("text")
-    goal_parser = sub.add_parser("goal", help="work towards a goal in the browser, step by step")
+    goal_parser = sub.add_parser("goal", help="work towards a goal — in the focused app, a named app, or the browser")
     goal_parser.add_argument("text")
+    goal_parser.add_argument("--app", default="", help="the app to do it in (its window must be open)")
+    surface_parser = sub.add_parser("surface", help="which apps voice control can operate")
+    surface_parser.add_argument("verb", nargs="?", choices=["list", "add", "remove"], default="list")
+    surface_parser.add_argument("app", nargs="?", default="")
+    skills_parser = sub.add_parser("skills", help="what has been learned, and what ships")
+    skills_parser.add_argument("--app", default="")
+    skills_parser.add_argument("--forget", default="", help="a skill id to throw away")
+    map_parser = sub.add_parser("map", help="what is known about an app's screens (and explore it, in a disposable instance)")
+    map_parser.add_argument("app")
+    map_parser.add_argument("--explore", action="store_true", help="list what exploring would click")
+    map_parser.add_argument("--go", action="store_true", help="really click — only in a disposable instance")
+    map_parser.add_argument("--limit", type=int, default=30)
     sub.add_parser("hints")
     grid_parser = sub.add_parser("grid")
     grid_parser.add_argument("--screen", action="store_true")
@@ -1556,7 +1775,13 @@ def main() -> int:
     elif args.command == "learn":
         return run_learn(args)
     elif args.command == "goal":
-        operation = {"op": "speak", "text": f"autopilot {args.text}"}
+        operation = {"op": "goal", "text": args.text, "app": args.app}
+    elif args.command == "surface":
+        return run_surface(args)
+    elif args.command == "skills":
+        return run_skills(args)
+    elif args.command == "map":
+        return run_map(args)
     elif args.command in ("hints", "clear", "dictation"):
         operation = {"op": args.command}
     elif args.command == "grid":

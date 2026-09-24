@@ -5,6 +5,8 @@
 ```
 manifest.json, BarWidget.qml     the Omarchy plugin (bar widget + panel)
 Orb.qml                          the orb: its own layer surface, drawn by the shell on the GPU
+Goal.qml                         the goal card: each step, and who chose it (skill, map, Jev)
+skills/                          skills that ship with the plugin
 install.sh, uninstall.sh         engine setup and removal
 bin/omarchy-voice                the command line (runs engine/omarchy_voice.py in the venv)
 ear/                             the ear (Rust): microphone, voice activity, fast recognizer
@@ -12,6 +14,10 @@ engine/
   omarchy_voice.py               service: control socket, state, trace, history, CLI
   ear.py                         client for the ear's socket
   learn.py                       mishearings mined from the local history
+  surface.py                     which app is in front, whether it can be operated; voice access
+  harness.py                     a goal: skill, then map, then Jev — and learning from the result
+  skills.py                      compiling a goal into a skill, matching, replaying by label
+  appmap.py                      app maps: screens, what each click reveals, routes; the explorer
   brain.py                       fast path, sound-alike matching, Jev questions, policy, execution
   fuzzy.py                       spelling + Metaphone similarity
   livemic.py                     Silero VAD segmentation, voxtype / in-process Whisper
@@ -55,6 +61,7 @@ uv run python tests/appearance_test.py  # the browser keeps its own dark mode wh
 uv run python tests/autopilot_test.py   # goals: the loop, the stages, the risk judge (offline, scripted Jev)
 uv run python tests/orb_test.py         # the orb: appears while listening, sized right, goes away again
 uv run python tests/learn_test.py       # what `learn` may and may not propose (offline)
+uv run python tests/harness_test.py     # skills and maps end to end: learn, replay, route, relearn (offline)
 ```
 
 The end-to-end suites speak through the real microphone path: a PipeWire null sink

@@ -116,21 +116,30 @@ With a [herdr](https://herdr.dev) window open:
 Agents waiting for an approval are never sent a prompt, and talking *about* an agent
 ("the alpha agent is slow today") does nothing — prompts start with "tell" or "ask".
 
-## Goals in the browser
+## Goals — in apps and on the web
 
 | Say | |
 |---|---|
-| "figure out when the market opens", "find out who wrote Dune" | works towards the goal, then reads the answer out |
+| "in hermes, go to settings and find where to enable dark mode" | a goal inside that app |
+| "in this app, find the archived chats" | a goal inside the focused app |
+| "go to settings and find the version" · "open appearance" | the same, when the focused app can be operated |
+| "figure out when the market opens", "find out who wrote Dune" | a goal on the web, then the answer read out |
 | "research the best train to Berlin", "look into …" | the same |
-| "autopilot book a table for two on Friday" | the same, for goals that fill something in |
-| "stop" | ends the run at once |
+| "autopilot book a table for two on Friday" | a goal that fills something in |
+| "give voice access to obsidian" | start that app so goals can operate it (restarts it if open, after you confirm) |
+| "stop" | ends the goal at once |
 | "confirm" | allows the one step it stopped at |
+
+In an app, a goal first looks for a **skill** (it was done before: replayed, no model), then
+asks the **app map** ("go to appearance" is a known path), and only then lets **Jev** work it
+out — which is then kept as a skill. On the web only Jev runs: every visit is different.
 
 It searches, follows links, scrolls and reads on its own. Filling in fields and pressing
 buttons is allowed, but it stops and asks before anything that sends, posts, buys, books or
-changes an account. It never types into a password or card field. See
-[configuration](configuration.md) for the three stages and
-[privacy](privacy.md) for what a goal sends.
+changes a setting; finding where a setting is never switches it. It never types into a
+password or card field, and password managers never get voice access. See
+[configuration](configuration.md) for the three stages and [privacy](privacy.md) for what a
+goal sends.
 
 ## System
 

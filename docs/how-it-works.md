@@ -79,16 +79,46 @@ than waited for, so drawing can never stall the microphone thread.
 
 ## Working towards a goal
 
-A goal runs a loop: read the page, ask Jev for the single next step out of the elements that
-exist, judge it, do it, read again. It stops at an answer, at a dead end, when the page stops
-changing, after 14 steps or four minutes, or the moment you say stop. Answers are lines of
-the page, quoted — the loop cannot write one.
+A goal runs where you are: in the named app ("in hermes …"), in the focused app when it can
+be operated, and otherwise on the web.
 
-Anything that commits is judged by a second, separate Jev call that sees only the page and
-the step about to happen, and answers safe / ask / refuse with a reason. A word list in code
-checks the same step independently. Either one is enough to stop and ask, an error or a
-timeout counts as "ask", and stage 3 (trusted sites) still always asks for money, deletions,
-account changes and signing in.
+**The standard surface.** Electron apps are Chromium inside. Started with a local debug port
+they answer the same protocol as the browser, and expose their interface as labelled
+elements — Hermes shows about a hundred: "Open settings", "Appearance", "About". Omarchy's
+launcher starts the apps you gave voice access with that port; everything else about the
+goal is the same in an app as on a page. Password managers never get a port.
+
+**Cheapest first.** Each goal is worked the cheapest way known to work:
+
+1. **A skill.** The goal was done here before. Its clicks are replayed by label — ids change
+   from screen to screen, labels do not — with no model at all. If the app changed and a
+   label is gone, the replay stops there and Jev carries on from that screen.
+2. **The app map.** Every click records the screen before and after it. From that graph,
+   "go to appearance" is a path: Open settings → Appearance. Jev also sees, next to each
+   element, what clicking it is known to reveal.
+3. **Jev.** Read the screen, choose the single next step among the elements that exist,
+   judge it, do it, read again. What just appeared comes first — an app repeats its sidebar
+   on every screen, and what a click opened would otherwise land past what a request can
+   carry.
+
+A goal Jev finishes cleanly — nothing asked, nothing refused — becomes a skill; what was
+typed from what you said becomes a slot ("search my notes for {text}"). A few skills ship
+with the plugin. Maps ship only when made in a disposable instance: on a live, connected app
+no label heuristic makes exploring safe — on Hermes the "navigational" buttons included
+"Restore checkpoint" and suggested prompts that start agent tasks — so on your machine maps
+are learned from goals, whose every click already passed the safety gates.
+
+It stops at an answer, at a dead end, when the screen stops changing, after 14 steps or four
+minutes, or the moment you say stop. Answers are quoted from the screen — a line of text, or
+the control that was being looked for — never written.
+
+Anything that commits is judged by a second, separate Jev call that sees the screen and the
+step about to happen, and answers safe / ask / refuse with a reason. A word list in code
+checks the same step independently. Either one is enough to stop and ask; a verdict that
+contradicts its own reason resolves to the stricter half; an error or a timeout counts as
+"ask". Two rules keep that from turning into constant questions: opening a screen to look at
+it is not a change, and a click the map knows only ever led somewhere is navigation — unless
+it once needed your approval, in which case it always will.
 
 ## Safety
 

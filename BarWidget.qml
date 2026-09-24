@@ -11,6 +11,20 @@ BarWidget {
   // the glowing orb above the bottom edge — its own layer surface, fed by the engine's socket
   Orb {}
 
+  // what a goal is doing, step by step, and who chose each step
+  Goal {
+    title: root.goalTitle
+    where: root.goalWhere
+    status: root.goalStatus
+    steps: root.goalSteps
+    answer: root.goalAnswer
+    used: root.goalUsed
+    learned: root.goalLearned
+    cost: root.goalCost
+    finished: root.goalFinished
+    fontFamily: root.fontFamily
+  }
+
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") + "/omarchy-voice"
   readonly property string statePath: runtimeDir + "/state.json"
   readonly property string controlCli: Quickshell.env("HOME") + "/.local/bin/omarchy-voice"
@@ -40,6 +54,17 @@ BarWidget {
   property string autopilotGoal: ""
   property int autopilotStep: 0
   property string autopilotLabel: ""
+  property string goalTitle: ""
+  property string goalWhere: ""
+  property string goalStatus: ""
+  property var goalSteps: []
+  property string goalAnswer: ""
+  property string goalUsed: ""
+  property bool goalLearned: false
+  property real goalCost: 0
+  property real goalFinished: 0
+  property int skillsCount: 0
+  property var surfaceApps: []
   property int closeSeq: -1
   property int latencyMs: 0
   property var traceEntries: []
@@ -144,6 +169,17 @@ BarWidget {
     autopilotGoal = String(parsed.autopilot_goal || "")
     autopilotStep = Number(parsed.autopilot_step || 0)
     autopilotLabel = String(parsed.autopilot_label || "")
+    goalTitle = String(parsed.goal_title || "")
+    goalWhere = String(parsed.goal_where || "")
+    goalStatus = String(parsed.goal_status || "")
+    goalSteps = parsed.goal_steps || []
+    goalAnswer = String(parsed.goal_answer || "")
+    goalUsed = String(parsed.goal_used || "")
+    goalLearned = parsed.goal_learned === true
+    goalCost = Number(parsed.goal_cost || 0)
+    goalFinished = Number(parsed.goal_finished || 0)
+    skillsCount = Number(parsed.skills_count || 0)
+    surfaceApps = parsed.surface_apps || []
     // the daemon is about to type: an open popup would swallow the keystrokes
     var seq = Number(parsed.close_panel || 0)
     if (closeSeq >= 0 && seq !== closeSeq) popupOpen = false
@@ -576,6 +612,16 @@ BarWidget {
           ControlButton { width: (parent.width - Style.space(6) * 3) / 4; icon: "󰧑"; label: "Jev only"; primary: root.jevOnly; onActivated: root.toggleJevOnly() }
         }
 
+        // what goals can reach: skills learned or shipped, apps started with voice access
+        Text {
+          width: parent.width
+          text: "󰓅  " + root.skillsCount + (root.skillsCount === 1 ? " skill" : " skills")
+                + "  ·  voice access: " + (root.surfaceApps.length ? root.surfaceApps.join(", ") : "none — say “give voice access to …”")
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.Wrap
+        }
         Text {
           width: parent.width
           horizontalAlignment: Text.AlignHCenter

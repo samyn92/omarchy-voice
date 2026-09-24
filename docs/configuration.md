@@ -21,7 +21,8 @@ line change the common ones for you.
 | `keep_history` | `true` | keep `~/.local/state/omarchy-voice/history.jsonl` |
 | `fast_stt_model` | `"base.en"` | Whisper model used when the ear is not running; `""` turns it off |
 | `ear` | `"auto"` | the Rust ear owns the microphone when it is running (`auto`, `on`, `off`). With it, commands are recognized in ~25 ms and the engine keeps about a gigabyte less in memory |
-| `autopilot_stage` | `2` | goals in the browser: `1` look only, `2` may fill in but asks before committing, `3` also acts alone on trusted sites |
+| `surface_apps` | `[]` | apps started with a local debug port so goals can operate them (`"give voice access to obsidian"` adds one). Password managers are refused whatever this says |
+| `autopilot_stage` | `2` | goals: `1` look only, `2` may fill in but asks before committing, `3` also acts alone on trusted sites |
 | `autopilot_trusted_sites` | `[]` | stage 3 only, e.g. `["github.com"]`. Money, deletions, account changes and signing in always ask, everywhere |
 | `autopilot_max_steps` | `14` | a goal gives up after this many steps (or four minutes) |
 
@@ -53,7 +54,10 @@ omarchy-voice dictation                   toggle continuous dictation
 omarchy-voice yolo | yolo-on | yolo-off
 omarchy-voice jev-only                     toggle Jev-only mode
 omarchy-voice transcribe-silence [seconds] quick transcription timeout (no value: cycle 0.5/1/2/3/5)
-omarchy-voice goal "<text>"                work towards a goal in the browser
+omarchy-voice goal "<text>" [--app hermes] work towards a goal: in a named app, the focused app, or the browser
+omarchy-voice surface [add|remove <app>]   which windows can be operated; which apps start with voice access
+omarchy-voice skills [--app X] [--forget ID]  what has been learned and what ships
+omarchy-voice map <app> [--explore]        what is known about an app's screens (--explore: what it would click)
 omarchy-voice learn [--apply] [--forget]   mishearings your voice produces, from your history
 omarchy-voice misses [--hours N] [--replay] [--all]
 omarchy-voice key                          store the OpenRouter key
@@ -94,5 +98,7 @@ o.bind("SUPER + SHIFT + F9", "Voice: show hints", "omarchy-voice hints")
 | `~/.config/omarchy-voice/corrections.json` | mishearings you accepted with `learn` |
 | `~/.local/share/omarchy-voice/asr-models/` | the command recognizer |
 | `~/.local/share/omarchy-voice/bin/ear` | the ear |
+| `~/.local/share/omarchy-voice/skills/` | skills learned on this machine (shipped ones are in the plugin's `skills/`) |
+| `~/.local/share/omarchy-voice/maps/` | app maps learned from use |
 | `$XDG_RUNTIME_DIR/omarchy-voice/` | live state for the widget (`state.json`, `trace.json`), the control socket |
 | `~/.config/systemd/user/omarchy-voice.service` | the service |

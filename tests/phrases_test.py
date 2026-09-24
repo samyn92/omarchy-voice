@@ -87,9 +87,35 @@ IN_SESSION = [
 ]
 
 
+# in front of an app that can be operated (a stand-in Hermes, with an "Open settings" button)
+APP_CASES = [
+    ("go to settings and find dark mode", "Goal in Hermes"),
+    ("open settings", "Goal in Hermes"),                    # its own button, not the Settings app
+    ("find where to enable dark mode", "Goal in Hermes"),
+    ("in this app, go to settings", "Goal in this app"),
+    ("in hermes, go to settings and find the archived chats", "Goal in hermes"),
+    ("in hermes go to settings", "Goal in hermes"),
+    ("in the morning I will call him", None),               # "in" that names no open app is just speech
+    ("open spotify", "Open Spotify"),                       # another app is still another app
+    ("give voice access to signal", "Voice access for Signal"),
+    ("scroll down", "Scroll down"),                         # commands stay commands
+    ("go to the second workspace", "Workspace 2"),
+]
+
+
+class _Hermes:
+    cls = title = "Hermes"
+
+
+class _HermesBridge:
+    def snapshot_for(self, *a, **k):
+        return {"elements": [{"text": "Open settings"}, {"text": "New session"}]}
+
+
 def main() -> int:
     brain = Brain(sv.ACTIONS, sv.exact_match, sv.normalize, {"hud": False, "speak": False, "jev_only": False})
     brain.fuzzy_element = lambda hypotheses: None   # depends on what is on screen; covered by the e2e tests
+    brain.operable_app = lambda: None               # which window is focused must not change these answers
     failures = 0
     for fast, accurate, expected in CASES:
         spoken = sv.normalize(accurate)
@@ -115,7 +141,16 @@ def main() -> int:
         failures += not ok
         print(("ok    " if ok else "FAIL  ") + f"[transcribing] {said!r:34} -> {got or 'text'}")
     brain.mode = ""
-    total = len(CASES) + len(IN_SESSION)
+    front = (_Hermes(), _HermesBridge(), "hermes")
+    brain.operable_app = lambda: front
+    brain._app_open = lambda name: name in ("hermes", "this app", "here")
+    for said, expected in APP_CASES:
+        d = brain.fast_path(sv.normalize(said), said)
+        got = d.action.label if d is not None and d.action is not None else None
+        ok = (expected is None and (got is None or "Goal" not in got)) or (got is not None and expected is not None and expected in got)
+        failures += not ok
+        print(("ok    " if ok else "FAIL  ") + f"[in Hermes] {said!r:36} -> {got}")
+    total = len(CASES) + len(IN_SESSION) + len(APP_CASES)
     print(f"\n{total - failures}/{total} passed")
     return 1 if failures else 0
 

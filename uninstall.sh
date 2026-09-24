@@ -14,9 +14,12 @@ VOXTYPE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/voxtype/config.toml"
 
 systemctl --user disable --now omarchy-voice-ear.service 2>/dev/null || true
 systemctl --user disable --now omarchy-voice.service 2>/dev/null || true
-rm -f "$UNIT" "$HOME/.local/bin/omarchy-voice"
+rm -f "$UNIT" "$(dirname "$UNIT")/omarchy-voice-ear.service" "$HOME/.local/bin/omarchy-voice"
 systemctl --user daemon-reload
-rm -rf "$DATA_DIR"
+# the engine goes; what it learned (skills, app maps) stays, like your history
+if [[ -d $DATA_DIR ]]; then
+  find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name skills ! -name maps -exec rm -rf {} +
+fi
 echo "Removed the service, the command and the engine ($DATA_DIR)."
 
 if [[ -f $VOXTYPE_CONFIG ]] && grep -q "omarchy-voice" "$VOXTYPE_CONFIG"; then
@@ -29,10 +32,11 @@ if [[ -f $VOXTYPE_CONFIG ]] && grep -q "omarchy-voice" "$VOXTYPE_CONFIG"; then
 fi
 
 if [[ ${1:-} == --purge ]]; then
-  rm -rf "$CONFIG_DIR" "$STATE_DIR"
-  echo "Removed settings, API key and history."
+  rm -rf "$CONFIG_DIR" "$STATE_DIR" "$DATA_DIR"
+  echo "Removed settings, API key, history, learned skills and app maps."
 else
-  echo "Kept settings and API key ($CONFIG_DIR) and history ($STATE_DIR) — pass --purge to remove them."
+  echo "Kept settings and API key ($CONFIG_DIR), history ($STATE_DIR) and learned skills and maps"
+  echo "($DATA_DIR) — pass --purge to remove them."
 fi
 
 [[ -f /etc/udev/rules.d/60-omarchy-voice-uinput.rules ]] &&

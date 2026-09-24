@@ -1,4 +1,4 @@
-"""Work towards a goal in the browser: one small step at a time, judged before it acts.
+"""Work towards a goal on a page or in an app: one small step at a time, judged before it acts.
 
 The loop is deliberately dull: look at the page, ask Jev for the single next step from the
 elements that actually exist, judge whether that step commits anything, do it, look again.
@@ -44,7 +44,8 @@ COMMITTING_KINDS = {"click_button", "type_text", "press_enter"}
 RISKY_WORDS = re.compile(
     r"\b(delete|remove|destroy|erase|buy|purchase|order|pay|payment|checkout|subscribe|donate|"
     r"send|post|publish|submit|confirm|book|reserve|apply|sign up|sign out|log ?out|log ?in|sign in|"
-    r"cancel subscription|deactivate|close account|transfer|withdraw|bid|place order)\b", re.I)
+    r"cancel subscription|deactivate|close account|transfer|withdraw|bid|place order|"
+    r"restore|reset|revert|roll ?back|discard|overwrite|factory|wipe|format)\b", re.I)
 SECRET_FIELD = re.compile(r"\b(password|passwort|passcode|pin|card number|kreditkarte|cvv|cvc|iban|"
                           r"security code|secret|token|api key)\b", re.I)
 
@@ -76,6 +77,9 @@ class Step:
     asked: bool = False
     cost: float = 0.0
     ms: int = 0
+    target: dict | None = None   # what it acted on: {"role", "text", "placeholder"} — for skills and maps
+    typed: str = ""              # what it typed, if it typed
+    source: str = "jev"          # who chose this step: jev, skill or map
 
 
 @dataclass
@@ -134,7 +138,8 @@ class Autopilot:
 
     def __init__(self, browser, *, stage: int = FILL_IN, ask=None, on_step=None, stop=None,
                  trusted_hosts: tuple[str, ...] = (), max_steps: int = MAX_STEPS,
-                 max_seconds: float = MAX_SECONDS, window_title: str | None = None) -> None:
+                 max_seconds: float = MAX_SECONDS, window_title: str | None = None,
+                 recorder=None, hints=None, open_web: bool = True, navigation=None) -> None:
         self.browser = browser
         self.stage = stage
         self.ask = ask or (lambda label, reason: False)
@@ -146,6 +151,15 @@ class Autopilot:
         self.window_title = window_title
         self._typed_into_search = False   # Enter in a search box submits a search, not a commitment
         self._seen: set[str] = set()          # what was on screen last step, to find what is new
+        # recorder(before, step, after): every action with the screen before and after it — the
+        #   raw material of app maps.  hints(snapshot) -> {element id: [labels it leads to]}: what
+        #   the map already knows, shown to Jev next to each element.
+        self.recorder = recorder
+        self.hints = hints
+        # navigation(snapshot, element) -> True when the map knows this click only goes somewhere
+        self.navigation = navigation
+        # an app is not the web: searching the internet from inside Hermes is not a step
+        self.open_web = open_web
 
     # -- the loop ------------------------------------------------------------
     def run(self, goal: str) -> Run:
@@ -153,6 +167,7 @@ class Autopilot:
         deadline = time.monotonic() + self.max_seconds
         last_signature = ""
         stale = 0
+        pending = None            # (screen before, step) of the last action, until the next screen is read
 
         for n in range(1, self.max_steps + 1):
             if self.stop():
@@ -165,8 +180,14 @@ class Autopilot:
             snapshot = self.browser.snapshot_for(self.window_title, timeout=8.0)
             if not snapshot:
                 run.status = "error"
-                run.answer = "I can't read the browser page."
+                run.answer = "I can't read the page or the app any more."
                 return run
+            if pending is not None and self.recorder is not None:
+                try:
+                    self.recorder(pending[0], pending[1], snapshot)
+                except Exception:
+                    pass                  # a map that cannot be written must not end the goal
+            pending = None
 
             signature = f"{snapshot.get('url')}|{len(snapshot.get('elements') or [])}"
             stale = stale + 1 if signature == last_signature else 0
@@ -183,7 +204,10 @@ class Autopilot:
                 run.answer = f"Jev could not decide: {exc}"[:160]
                 return run
 
-            step = Step(n=n, kind=choice["kind"], label=choice["label"], cost=choice["cost"])
+            element = choice.get("element") or {}
+            step = Step(n=n, kind=choice["kind"], label=choice["label"], cost=choice["cost"],
+                        target={k: element.get(k, "") for k in ("role", "text", "placeholder")} if element else None,
+                        typed=choice.get("text", "") if choice["kind"] == "type_text" else "")
             run.cost += choice["cost"]
 
             if step.kind == "done":
@@ -211,6 +235,9 @@ class Autopilot:
 
             if step.kind == "press_enter" and self._typed_into_search:
                 step.verdict, step.reason = "safe", "nothing_committed"   # submitting a search
+            elif (step.kind == "click_button" and self.navigation is not None and choice.get("element")
+                  and not RISKY_WORDS.search(step.label) and self._known_way(snapshot, choice["element"])):
+                step.verdict, step.reason = "safe", "nothing_committed"   # the map knows it only goes somewhere
             elif step.kind in COMMITTING_KINDS:
                 verdict, reason, cost = self._judge(goal, snapshot, step, choice)
                 if verdict == "safe" and reason in NEVER_ALONE:
@@ -248,11 +275,19 @@ class Autopilot:
             step.ms = int((time.perf_counter() - started) * 1000)
             run.steps.append(step)
             self.on_step(step, run)
+            if step.ok:
+                pending = (snapshot, step)
 
         run.status = "limit"
         return run
 
     # -- the two gates -------------------------------------------------------
+    def _known_way(self, snapshot: dict, element: dict) -> bool:
+        try:
+            return bool(self.navigation(snapshot, element))
+        except Exception:
+            return False
+
     def _stage_block(self, step: Step, choice: dict) -> str:
         """Hard rules, before any model has a say."""
         if self.stage <= LOOK and step.kind in COMMITTING_KINDS:
@@ -290,15 +325,28 @@ class Autopilot:
         result = self.browser.execute({"type": "page_text"}, self.window_title)
         return sentences(result.get("text", "") if isinstance(result, dict) else "")
 
+    def _describe(self, e: dict, host: str, leads: dict) -> str:
+        mark = "(in dialog) " if e.get("in_dialog") else "(new) " if e.get("new") else ""
+        line = mark + jev.encode_element(e, host)
+        if leads.get(e["id"]):
+            line += " → leads to: " + ", ".join(leads[e["id"]][:6])
+        return line
+
     def _state(self, goal: str, snapshot: dict, run: Run, lines: list[str] | None = None,
                elements: list[dict] | None = None) -> dict:
         host = jev.host_of(snapshot.get("url", ""))
+        leads = {}
+        if self.hints is not None:
+            try:
+                leads = self.hints(snapshot) or {}
+            except Exception:
+                leads = {}
         elements = elements if elements is not None else (snapshot.get("elements") or [])[:MAX_ELEMENTS]
         return {
             "page_text": [f"t{i:02d} {line}" for i, line in enumerate(lines or [])],
             "goal": goal,
             "page": {"url": str(snapshot.get("url", ""))[:200], "title": str(snapshot.get("title", ""))[:120]},
-            "elements": [("(in dialog) " if e.get("in_dialog") else "(new) " if e.get("new") else "") + jev.encode_element(e, host) for e in elements],
+            "elements": [self._describe(e, host, leads) for e in elements],
             "steps_so_far": [{"did": s.label, "outcome": s.outcome, "worked": s.ok} for s in run.steps[-6:]],
             "steps_left": self.max_steps - len(run.steps),
         }
@@ -335,7 +383,7 @@ class Autopilot:
             "scroll_down": "Scroll further down this page to see more",
             "scroll_up": "Scroll back up this page",
             "go_back": "Go back to the previous page",
-            "search_web": "Search the web for the goal (use when this page cannot help)",
+            **({"search_web": "Search the web for the goal (use when this page cannot help)"} if self.open_web else {}),
             "done": "The goal is reached: the answer is visible on this page",
             "stuck": "This cannot be done from here (a login is needed, nothing matches, a dead end)",
         }
@@ -357,7 +405,11 @@ class Autopilot:
                                                 "directly and is more reliable than typing into whatever box this page "
                                                 "happens to show. Type into a field only for this site's own search or a "
                                                 "form the goal needs. Pick done as soon as `page_text` answers the goal, "
-                                                "and stuck rather than guessing.")},
+                                                "and stuck rather than guessing. When the goal is to find, show or "
+                                                "locate something — where a setting is, what a value is — it is done "
+                                                "the moment that thing is visible: finding where dark mode is does not "
+                                                "mean switching it on. Only operate a control when the goal asks for "
+                                                "the change itself.")},
                      "criteria": kinds},
             "element": {"type": "choice",
                         "instructions": {"question": "Which element does that step act on? Options are the element ids in `elements`.",
@@ -368,7 +420,9 @@ class Autopilot:
                                     | {"none": "no element"}},
             "answer": {"type": "choice",
                        "instructions": {"question": "If the step is done: which line of the page answers `goal`?",
-                                        "focus": "Options are lines of `page_text`. Pick none unless the step is done."},
+                                        "focus": ("Options are lines of `page_text`. Pick none unless the step is done. "
+                                                  "When the goal was to find where a control is, pick none here and "
+                                                  "choose that control as the element instead.")},
                        "criteria": {f"t{i:02d}": line for i, line in enumerate(lines)} | {"none": "no answer here"}},
             "text": {"type": "choice",
                      "instructions": {"question": "If something is typed or searched: which option is the text to use?",
@@ -408,6 +462,10 @@ class Autopilot:
                 # the page's own search box, which the snapshot already identified
                 element = ids.get(str(snapshot.get("search_box_id") or ""))
                 out["element"] = element
+            if (not element or not text) and not self.open_web:
+                out["kind"] = "stuck"          # inside an app there is no web to fall back to
+                out["label"] = "nothing to type into"
+                return out
             if not element or not text:
                 # no field to type into: search the web for the goal rather than give up
                 query = text or goal
@@ -436,6 +494,10 @@ class Autopilot:
             picked = pick("answer")
             index = int(picked[1:]) if re.fullmatch(r"t\d+", picked) and int(picked[1:]) < len(lines) else -1
             out["answer"] = lines[index] if index >= 0 else ""
+            if not out["answer"] and element is not None and element.get("text"):
+                # "where is dark mode": the answer is the control itself, and where it is
+                where = snapshot.get("title") or ""
+                out["answer"] = f"{element['text']}" + (f" — {where}" if where else "")
             out["label"] = "Done"
         else:
             out["kind"] = "stuck"
@@ -461,7 +523,9 @@ class Autopilot:
                                                    "message, posting, buying, booking, changing an account. Changing a setting "
                                                    "is also a commitment when `goal` only asked to find or show it — finding "
                                                    "where dark mode is is not switching it on. Refuse when it is irreversible "
-                                                   "or clearly not what `goal` asked for.")},
+                                                   "or clearly not what `goal` asked for. Opening a screen, a panel, a "
+                                                   "menu or a settings page to look at it is safe — only changing a value "
+                                                   "inside it counts as changing settings.")},
                         "criteria": {"safe": "Nothing is committed: go ahead",
                                      "ask": "It commits something: put it to the user first",
                                      "refuse": "Irreversible, or not what the goal asked for: do not do it"}},

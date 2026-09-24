@@ -20,7 +20,7 @@ every claim has a measurement behind it.
 | Hearing | Rust ear, Parakeet, ~25 ms per command, chosen on real recordings |
 | Understanding | local phrases and sound-alike matching first, Jev for the rest — Jev only ever *chooses* |
 | Acting | Hyprland dispatch, uinput mouse and keyboard, browser via CDP, herdr via its socket |
-| Goals | a step loop with two safety gates — wired to the browser only |
+| Goals | skill → map → Jev, in the browser and in Electron apps; two safety gates |
 | Showing | the orb and the panel, drawn by the Omarchy shell on the GPU |
 
 ## Part one: a standard surface for every app
@@ -68,11 +68,59 @@ way in on:
 A debug port lets any program on the machine drive that app. It stays opt-in, per app,
 listed in the panel.
 
-### Not built yet
+### Built
 
-The test ran from a script. Missing for it to be a feature: launching apps with the port,
-pointing the goal loop at the focused window instead of the browser, and falling back to the
-accessibility tree and text recognition when there is no port.
+The goal runs where you are: "in hermes …", the focused app, or the web. "Give voice access
+to obsidian" makes Omarchy's launcher start that app with a local port from then on;
+password managers are refused outright. `omarchy-voice surface` shows what can be reached.
+Still to come: the accessibility tree as the way into GTK and Qt apps, and text recognition
+for everything else.
+
+## The knowledge layer: maps and skills
+
+Two kinds of interface need two approaches. **The open web** is different on every visit —
+there Jev works each goal out, choosing among what is on the page. **Known interfaces** —
+Omarchy's apps, and its web apps — are the same for every user. What is learned about them
+once is worth keeping, and shipping.
+
+| | What it is | Model needed |
+|---|---|---|
+| **App maps** | every screen seen, and what each click revealed | no — learned from use |
+| **Skills** | a goal that worked, as the labels to click in order | no — replayed |
+| **Matching** | what was said, to the skill or the place on the map | no — fuzzy matching today, a small local model later |
+| **Jev** | whatever the maps and skills do not cover | yes, and what it finds is kept |
+
+This is where the research points: AutoDroid (MobiCom 2024) explores apps offline into a
+transition graph and beats GPT-4 agents by 36–40 points; UI-KOBE (2026) shows small models
+become reliable when the app knowledge is precomputed; SkillDroid (2026) replays compiled
+skills without a model at 100% over 79 rounds and gets *better* with use while a plain agent
+degrades from 80% to 44%. General screen-reading models, by contrast, still finish only
+22–25% of desktop tasks.
+
+Measured on Hermes, through the running service:
+
+| | Chosen by | Cost | Time |
+|---|---|---|---|
+| "go to settings and find where to enable dark mode", first time | Jev — then kept | $0.00076 | 5.0 s |
+| the same, again | skill | $0 | 3.0 s |
+| the same, in other words | skill | $0 | 3.0 s |
+| "go to appearance" | the map | $0 | 3.0 s |
+| a fresh install, shipped skill, new wording | skill | $0 | 3.5 s |
+
+What was learned on the way shaped it:
+
+- **Exploring a live app is not safe.** The explorer's "navigational" buttons in Hermes
+  included "Restore checkpoint" and suggested prompts that start agent tasks, and the app
+  marked its chat history — not its settings — as navigation. Maps on a user's machine are
+  therefore learned from goals; maps that ship are made in a disposable instance.
+- **Finding is not operating.** The first run switched Hermes to dark mode when asked where
+  the setting was. The judge now separates the two, and a verdict that contradicts its own
+  reason resolves to the stricter half.
+- **Asking too much is also a failure.** Opening settings was once put to the user. Opening a
+  screen is not a change, and a click the map knows only led somewhere skips the judge —
+  unless it once needed approval, in which case it always will.
+- **Skills record labels, maps record screens.** Skills ship; maps from a user's machine
+  never do — their screens include chat titles.
 
 ## Part two: a real harness for deep goals
 
@@ -164,22 +212,23 @@ attention budget — ignore, glance (the orb changes colour), notice, interrupt 
 
 ## Road
 
-**Next — the standard surface.** Electron apps launched with a debug port (opt-in), the goal
-loop pointed at the focused window, accessibility tree as the second way in. "In this app,
-go to settings and find X" works by voice in Hermes, Signal, Spotify.
+**Done** — the ear in Rust; the orb in the shell; goals in Electron apps through voice access;
+skills and maps, learned from use and replayed without a model; three Hermes skills shipped;
+the goal card showing who chose each step.
 
-**Then — the deep harness.** Plan shapes, the to-do overlay, a tab per item, the notebook
-with sources, conclusions computed in code, a table of good sources. "Compare these two
-cards" gives a real, sourced answer.
+**Next — more of the surface.** The accessibility tree as the way into GTK and Qt apps; maps
+for Omarchy's default apps built in a disposable instance and shipped; more shipped skills.
+
+**Then — the deep harness.** Plan shapes, a tab per item, the notebook with sources,
+conclusions computed in code. "Compare these two cards" gives a real, sourced answer.
 
 **Then — pointing.** Radar around the cursor, "that" and "this", hints near the cursor,
 "send this to claude".
 
 **Then — awareness.** Events, the attention budget, the orb as a glance.
 
-**Later** — text recognition and a vision model as the third way in; a local decision model
-where the bench says it is good enough; a personal command recognizer; plugins for apps
-that want to offer more than their interface shows.
+**Later** — a small local model for matching what was said to skills and places; sharing
+skills between Omarchy users; text recognition and a vision model as the third way in.
 
 ## Open questions
 

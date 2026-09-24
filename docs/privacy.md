@@ -38,6 +38,17 @@ $0.0004; the panel shows the running total for the day.
 To send nothing at all, don't set an API key: every locally understood command keeps
 working and open-ended ones show *Jev isn't set up*.
 
+## Skills, maps and voice access
+
+- **Skills** record which labels to click, in which order — "Open settings", "Appearance" —
+  never what was on screen. The ones that ship were checked for anything personal.
+- **Maps** record the labels of each screen they have seen, to recognise it again. On your
+  machine that can include the titles of your chats or notes, so maps stay in
+  `~/.local/share/omarchy-voice/maps/` and are never shipped or sent.
+- **Voice access** starts an app with a debug port bound to this machine only. While it is
+  open, any program on this machine could drive that app the same way — which is why it is
+  opt-in per app, listed by `omarchy-voice surface`, and never given to a password manager.
+
 ## On screen
 
 The service reads the screen only while you speak, to understand the command you are

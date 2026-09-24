@@ -32,6 +32,7 @@ import herdr_ctl
 import jev
 import keyboard
 import perceive
+import surface
 from spans import extract_text_candidates, extract_url_candidates, to_http_url
 from uinput import pointer
 
@@ -174,6 +175,13 @@ TRANSCRIBE_CANCEL = ("cancel transcription", "cancel transcribing", "transcribe 
 # a goal for the browser to work towards by itself, rather than one command
 GOAL_PREFIXES = ("autopilot", "auto pilot", "browse for", "work out", "figure out", "find out",
                  "research", "look into", "take over and", "do this for me")
+
+# said while an app that can be operated is in front: a goal inside that app, not a command
+APP_VERBS = re.compile(r"^(?:go to|open|show(?: me)?|find|search(?: for)?|navigate to|take me to|turn (?:on|off)|"
+                       r"enable|disable|change|set|look for|where (?:is|can i)|how (?:do|can) i)\b")
+VOICE_ACCESS = re.compile(r"^(?:give|grant|enable)(?: voice)? (?:access|control)(?: to| for)? (?P<app>.+)$|"
+                          r"^(?:make|let me control) (?P<app2>.+?)(?: operable| controllable| by voice)?$|"
+                          r"^voice (?:access|control) (?:for|to) (?P<app3>.+)$")
 
 # spoken addresses: "go to example com" (the dot does not survive normalization)
 TLDS = "com|org|net|dev|io|ai|app|de|eu|co|tv|me|info|news|sh|gg|xyz"
@@ -399,6 +407,50 @@ class Brain:
             now = time.monotonic()
             self._hud_texts = [(t, x) for t, x in self._hud_texts if now - t < 30] + [(now, text), (now, sub)]
             self.overlay.send(op="hud", text=text, sub=sub, tone=tone, ms=ms)
+
+    def launch_argv(self, app) -> list[str]:
+        """Apps with voice access start with a debug port; the rest start as they always do."""
+        if surface.opted_in(app, self.settings) and surface.is_electron(surface.electron_entry(app)):
+            argv = surface.launch_argv(app)
+            if argv:
+                return argv
+        return apps.launch_argv(app)
+
+    def operable_app(self):
+        """(window, bridge, key) when the focused window is an app that can be operated, else None."""
+        now = time.monotonic()
+        cached = getattr(self, "_operable", None)
+        if cached and now - cached[0] < 1.5:
+            return cached[1]
+        found = None
+        try:
+            window = desktop.snapshot().focused
+            if window is not None and not browsers.is_chromium(window.cls):
+                reach = surface.for_window(window)
+                if reach:
+                    found = (window, reach[0], reach[1])
+        except Exception:
+            found = None
+        self._operable = (now, found)
+        return found
+
+    def _app_open(self, name: str) -> bool:
+        if name in ("this app", "here"):
+            return self.operable_app() is not None
+        return any(name in w.cls.lower() or name in w.title.lower() for w in desktop.snapshot().windows)
+
+    def _means_another_app(self, spoken: str, front) -> bool:
+        """"open spotify" in front of Hermes still opens Spotify — unless Hermes shows a "Spotify"."""
+        m = re.fullmatch(r"(?:open|launch|show me|switch to) (?:the |my )?(.+)", spoken)
+        if not m:
+            return False
+        other = self.app_by_name(m.group(1))
+        if other is None or apps.window_matches(other, front[0].cls, front[0].title):
+            return False
+        snapshot = front[1].snapshot_for(None, timeout=2.0) or {}
+        visible = {" ".join(str(e.get("text", "")).lower().split()) for e in snapshot.get("elements") or []}
+        # Hermes' button says "Open settings": "open settings" there means that button, not an app
+        return not any(re.search(rf"\b{re.escape(m.group(1))}\b", label) for label in visible)
 
     def is_own_text(self, text: str) -> bool:
         """Text the overlay showed in the last 30 s (OCR reads it back from the screen)."""
@@ -701,6 +753,37 @@ class Brain:
             goal = re.sub(r"(?i)^(?:" + "|".join(GOAL_PREFIXES) + r")(?: me)?[\s,:]+", "", raw.strip(), count=1)
             return Decision(Action("autopilot", f"Goal: {goal.strip(' .!?')[:50]}",
                                    {"goal": goal.strip(" .!?")}, repeatable=False))
+
+        # "in this app, go to settings", "in hermes find dark mode" — a goal in a named app
+        if s.startswith("in "):
+            words = s.split()[1:]
+            # "in this app …", "in hermes …", "in visual studio …": the shortest name that is open
+            for n in (2, 1, 3):
+                hint = " ".join(words[:n])
+                rest = words[n:]
+                if rest and rest[0] == "app":
+                    rest = rest[1:]
+                if len(rest) >= 2 and (hint in ("this app", "here")
+                                       or (hint not in ("this", "the") and self._app_open(hint))):
+                    pattern = r"(?i)^in\s+" + r"\W+".join(map(re.escape, hint.split())) + r"(?:\s+app)?[\s,:]+"
+                    goal = re.sub(pattern, "", raw.strip(), count=1).strip(" .!?")
+                    return Decision(Action("autopilot", f"Goal in {hint}: {goal[:40]}",
+                                           {"goal": goal, "app": hint}, repeatable=False))
+
+        # "give voice access to signal": start that app so it can be operated from now on
+        m = VOICE_ACCESS.fullmatch(s)
+        if m:
+            wanted = next(g for g in (m.group("app"), m.group("app2"), m.group("app3")) if g)
+            app = self.app_by_name(wanted.removesuffix(" app"))
+            if app is not None:
+                return Decision(Action("surface", f"Voice access for {app.name}", {"app": app}, repeatable=False))
+
+        # in front of an app that can be operated, "go to settings" is a goal inside it
+        if APP_VERBS.match(s) and len(s.split()) >= 2:
+            front = self.operable_app()
+            if front is not None and not self._means_another_app(s, front):
+                return Decision(Action("autopilot", f"Goal in {front[0].cls}: {raw.strip(' .!?')[:40]}",
+                                       {"goal": raw.strip(" .!?"), "app": "this"}, repeatable=False))
 
         # "go to example.com", "open example dot com" — a plain address, no site list needed
         m = re.fullmatch(r"(?:go to|open|navigate to|take me to|visit)(?: the)? "
@@ -1429,17 +1512,31 @@ class Brain:
                 desktop.exec_detached(["xdg-terminal-exec", "herdr"] if shutil.which("xdg-terminal-exec") else ["foot", "herdr"])
                 return True, "herdr"
             running = next((w for w in desk.windows if apps.window_matches(app, w.cls, w.title)), None)
+            argv = self.launch_argv(app)
             if args.get("new") or args.get("count", 1) > 1:
                 for _ in range(args.get("count", 1)):
-                    desktop.exec_detached(apps.launch_argv(app))
+                    desktop.exec_detached(argv)
                     time.sleep(0.5)
                 return True, action.label
             if running:
                 if running.workspace_name.startswith("special:"):
                     desktop.window_verb("restore", running, desk)
                 return desktop.focus_window(running)
-            desktop.exec_detached(apps.launch_argv(app))
+            desktop.exec_detached(argv)
             return True, action.label
+
+        if k == "restart_app":
+            # close it, wait until it is gone, start it again with voice access
+            app = args["app"]
+            for window in [w for w in desktop.snapshot().windows if apps.window_matches(app, w.cls, w.title)]:
+                desktop.window_verb("close", window, desktop.snapshot())
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline and any(apps.window_matches(app, w.cls, w.title)
+                                                      for w in desktop.snapshot().windows):
+                time.sleep(0.3)
+            time.sleep(0.8)                       # single-instance apps hold their lock a moment longer
+            desktop.exec_detached(self.launch_argv(app))
+            return True, f"{app.name} restarted with voice access"
 
         if k == "hints":
             scene = self.current_scene(need_elements=True)
